@@ -1,0 +1,11 @@
+# MAPA DE MEMÓRIA BMS
+
+## COILS (Função 01/05)
+
+Base 1 | Base 0 | Descrição                              | Permissão
+-------|--------|----------------------------------------|----------
+1      | 0      | Comando - Medir Resistência do Banco   | R/W
+2      | 1      | Relé 1 - Acionamento                   | R
+3      | 2      | Relé 2 - Acionamento                   | R
+4      | 3      | Relé 3 - Acionamento                   | R
+5      | 4      | Relé 4 - Acionamento                   | R
