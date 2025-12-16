@@ -1,5 +1,5 @@
-"""Emulador BMS PyQt6 - Interface Moderna"""
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+"""EmuladorMODBUSRTU - Interface PyQt6 Moderna para Servidor Modbus RTU Serial"""
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                               QLabel, QPushButton, QComboBox, QLineEdit, QTabWidget, 
                               QScrollArea, QCheckBox, QGroupBox, QFileDialog, QMessageBox, QGridLayout)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -96,9 +96,9 @@ class BMSEmulator(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("🔋 Emulador BMS - PyQt6")
-        
-        self.config_file = "bms_emulator_config.txt"
+        self.setWindowTitle("📡 EmuladorMODBUSRTU - PyQt6")
+
+        self.config_file = "emulator_modbus_config.txt"
         self.csv_path = self.load_last_csv_path() or ""
         self.coils_map = {}
         self.di_map = {}

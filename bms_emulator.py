@@ -1,4 +1,4 @@
-"""Emulador BMS com interface em abas - Lê CSV automaticamente"""
+"""EmuladorMODBUSRTU com interface em abas - Lê CSV automaticamente"""
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from pymodbus.server.sync import ModbusSerialServer
@@ -10,15 +10,15 @@ import time
 import serial.tools.list_ports
 import os
 
-class BMSEmulator:
+class ModbusEmulator:
     def __init__(self):
         self.window = tk.Tk()
-        self.window.title("🔋 Emulador BMS - Baseado em CSV")
+        self.window.title("📡 EmuladorMODBUSRTU - Baseado em CSV")
         self.window.geometry("1200x800")
         self.window.resizable(True, True)
         
         # CSV path
-        self.config_file = "bms_emulator_config.txt"
+        self.config_file = "emulator_modbus_config.txt"
         last_csv = self.load_last_csv_path()
         self.csv_path = tk.StringVar(value=last_csv if last_csv else "")
         self.coils_map = {}
@@ -552,6 +552,6 @@ class BMSEmulator:
         self.window.mainloop()
 
 if __name__ == '__main__':
-    app = BMSEmulator()
+    app = ModbusEmulator()
     app.run()
 

@@ -39,6 +39,7 @@ test_*.py
 pytest.ini
 
 # Configuração local
+emulator_modbus_config.txt
 bms_emulator_config.txt
 
 # Cache
