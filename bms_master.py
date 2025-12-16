@@ -1,4 +1,4 @@
-"""Master Modbus RTU para monitorar o BMS Slave"""
+"""Master Modbus RTU para monitorar o Servidor EmuladorMODBUSRTU"""
 import tkinter as tk
 from tkinter import ttk
 from pymodbus.client.sync import ModbusSerialClient
@@ -6,10 +6,10 @@ from csv_parser import MemoryMapParser
 from threading import Thread
 import time
 
-class BMSMaster:
+class MasterModbus:
     def __init__(self):
         self.window = tk.Tk()
-        self.window.title("🔍 Monitor BMS - Master Modbus")
+        self.window.title("🔍 Monitor EmuladorMODBUSRTU - Master Modbus")
         self.window.geometry("900x700")
         
         # Parser CSV
@@ -495,5 +495,5 @@ class BMSMaster:
         self.window.mainloop()
 
 if __name__ == '__main__':
-    app = BMSMaster()
+    app = MasterModbus()
     app.run()

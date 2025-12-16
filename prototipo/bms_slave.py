@@ -1,4 +1,4 @@
-"""Emulador Modbus RTU Slave BMS - 19200 8N1 ID1"""
+"""Servidor Modbus RTU EmuladorMODBUSRTU - 19200 8N1 ID1"""
 import logging
 from pymodbus.server.sync import StartSerialServer
 from pymodbus.datastore import ModbusSlaveContext, ModbusServerContext, ModbusSequentialDataBlock
@@ -12,7 +12,7 @@ PORT = 'COM16'
 BAUDRATE = 19200
 
 print("=" * 60)
-print("🔋 EMULADOR MODBUS RTU SLAVE BMS")
+print("📡 EMULADOR MODBUS RTU - EmuladorMODBUSRTU")
 print("=" * 60)
 print(f"Porta Servidor: {PORT}")
 print(f"Porta Cliente: COM13")
