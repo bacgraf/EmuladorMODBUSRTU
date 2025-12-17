@@ -37,7 +37,18 @@ class MemoryMapParser:
                     addr_base1 = int(base1)
                     
                     # Valor inicial
-                    val_inicial = int(valor_inicial) if valor_inicial else 0
+                    if valor_inicial.upper() == 'ON':
+                        val_inicial = 1
+                        print(f"DEBUG PARSER: {tipo} {addr_base0} = ON → 1")
+                    elif valor_inicial.upper() == 'OFF':
+                        val_inicial = 0
+                        print(f"DEBUG PARSER: {tipo} {addr_base0} = OFF → 0")
+                    elif valor_inicial:
+                        val_inicial = int(valor_inicial)
+                        print(f"DEBUG PARSER: {tipo} {addr_base0} = {valor_inicial} → {val_inicial}")
+                    else:
+                        val_inicial = 0
+                        print(f"DEBUG PARSER: {tipo} {addr_base0} = (vazio) → 0")
                     
                     # Criar registro
                     reg = {

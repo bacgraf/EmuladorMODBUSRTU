@@ -5,10 +5,10 @@ from pymodbus.client.sync import ModbusSerialClient
 from threading import Thread
 import time
 
-class MonitorGUI:
+class MonitorModbus:
     def __init__(self):
         self.window = tk.Tk()
-        self.window.title("🔍 Monitor BMS - Cliente Modbus")
+        self.window.title("🔍 Monitor EmuladorMODBUSRTU - Cliente Modbus")
         self.window.geometry("600x550")
         
         self.client = None
@@ -214,5 +214,5 @@ class MonitorGUI:
         self.window.mainloop()
 
 if __name__ == '__main__':
-    app = MonitorGUI()
+    app = MonitorModbus()
     app.run()

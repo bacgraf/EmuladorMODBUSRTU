@@ -1,4 +1,4 @@
-"""Interface Gráfica para controlar o BMS Slave"""
+"""Interface Gráfica para controlar o EmuladorMODBUSRTU"""
 import tkinter as tk
 from tkinter import ttk
 from pymodbus.server.sync import StartSerialServer
@@ -6,10 +6,10 @@ from pymodbus.datastore import ModbusSlaveContext, ModbusServerContext, ModbusSe
 from pymodbus.transaction import ModbusRtuFramer
 from threading import Thread
 
-class BMSGui:
+class ModbusGui:
     def __init__(self):
         self.window = tk.Tk()
-        self.window.title("🔋 Emulador BMS - Controle de Registradores")
+        self.window.title("📡 EmuladorMODBUSRTU - Controle de Registradores")
         self.window.geometry("600x700")
         
         # Datastore compartilhado
@@ -179,5 +179,5 @@ class BMSGui:
         self.window.mainloop()
 
 if __name__ == '__main__':
-    app = BMSGui()
+    app = ModbusGui()
     app.run()

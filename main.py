@@ -91,7 +91,7 @@ class MonitorThread(QThread):
     def stop(self):
         self.running = False
 
-class BMSEmulator(QMainWindow):
+class ModbusEmulator(QMainWindow):
     server_error = pyqtSignal(str)  # Signal para erros da thread do servidor
 
     def __init__(self):
@@ -332,8 +332,16 @@ class BMSEmulator(QMainWindow):
         self.editor = CSVEditor()
         if self.csv_path and os.path.exists(self.csv_path):
             self.editor.load_csv(self.csv_path)
+        # Conectar signal para recarregar CSV automaticamente quando editor fecha
+        self.editor.csv_saved.connect(self.reload_csv_from_editor)
         self.editor.showMaximized()
     
+    def reload_csv_from_editor(self, csv_path):
+        """Recarregar CSV após edição no editor"""
+        if csv_path and os.path.exists(csv_path):
+            print(f"🔄 Recarregando mapa de memória: {csv_path}")
+            self.load_csv()
+
     def load_csv(self):
         try:
             parser = MemoryMapParser(self.csv_path)
@@ -351,15 +359,16 @@ class BMSEmulator(QMainWindow):
             ir_block = [0] * (max(max_ir + 100, 10000) + 1)
             hr_block = [0] * (max(max_hr + 100, 10000) + 1)
             
-            # Preencher valores (índice do array = endereço Modbus)
+            # Preencher valores (índice do array = endereço Modbus + 1)
+            # ModbusSequentialDataBlock ignora o índice 0, então deslocamos +1
             for addr, reg in self.coils_map.items():
-                coils_block[addr] = reg['valor_inicial']
+                coils_block[addr + 1] = reg['valor_inicial']
             for addr, reg in self.di_map.items():
-                di_block[addr] = reg['valor_inicial']
+                di_block[addr + 1] = reg['valor_inicial']
             for addr, reg in self.ir_map.items():
-                ir_block[addr] = reg['valor_inicial']
+                ir_block[addr + 1] = reg['valor_inicial']
             for addr, reg in self.hr_map.items():
-                hr_block[addr] = reg['valor_inicial']
+                hr_block[addr + 1] = reg['valor_inicial']
             
             self.store = ModbusSlaveContext(
                 co=ModbusSequentialDataBlock(0, coils_block),
@@ -367,6 +376,17 @@ class BMSEmulator(QMainWindow):
                 ir=ModbusSequentialDataBlock(0, ir_block),
                 hr=ModbusSequentialDataBlock(0, hr_block)
             )
+            
+            # DEBUG: Verificar valores no store após criação
+            print("\n🔍 DEBUG: Verificando Store vs Array vs CSV")
+            print("="*60)
+            for addr in sorted(self.coils_map.keys()):
+                array_val = coils_block[addr]
+                csv_val = self.coils_map[addr]['valor_inicial']
+                store_val = self.store.getValues(1, addr, 1)[0]
+                match = "✅" if (array_val == csv_val == store_val) else "❌"
+                print(f"{match} Coil {addr}: CSV={csv_val} | Array={array_val} | Store={store_val}")
+            print("="*60 + "\n")
             
             # Contexto será recriado no start_server com Slave ID correto
             self.context = None
@@ -476,13 +496,14 @@ class BMSEmulator(QMainWindow):
                 
                 grid.addWidget(QLabel(reg['nome']), row, 2)
                 
-                btn = QPushButton("OFF")
+                # Definir estado inicial baseado no CSV
+                initial_value = bool(reg['valor_inicial'])
+                btn = QPushButton("ON" if initial_value else "OFF")
                 btn.setCheckable(True)
-                btn.setChecked(bool(reg['valor_inicial']))
+                btn.setChecked(initial_value)
                 btn.setMinimumHeight(24)
                 btn.setFixedWidth(50)
-                if bool(reg['valor_inicial']):
-                    btn.setText("ON")
+                if initial_value:
                     btn.setStyleSheet("background-color: #27ae60; color: white;")
                 else:
                     btn.setStyleSheet("background-color: #95a5a6; color: white;")
@@ -550,13 +571,16 @@ class BMSEmulator(QMainWindow):
                 
                 btn = QPushButton("OFF")
                 btn.setCheckable(True)
-                btn.setChecked(bool(reg['valor_inicial']))
                 btn.setMinimumHeight(24)
                 btn.setFixedWidth(50)
-                if bool(reg['valor_inicial']):
+                # Definir estado inicial baseado no CSV
+                initial_value = bool(reg['valor_inicial'])
+                btn.setChecked(initial_value)
+                if initial_value:
                     btn.setText("ON")
                     btn.setStyleSheet("background-color: #27ae60; color: white;")
                 else:
+                    btn.setText("OFF")
                     btn.setStyleSheet("background-color: #95a5a6; color: white;")
                 btn.clicked.connect(lambda checked, a=addr, b=btn: self.toggle_di(a, b, checked))
                 grid.addWidget(btn, row, 3, Qt.AlignmentFlag.AlignLeft)
@@ -931,7 +955,7 @@ class BMSEmulator(QMainWindow):
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    window = BMSEmulator()
+    window = ModbusEmulator()
     window.showMaximized()
     
     if window.csv_path and os.path.exists(window.csv_path):
