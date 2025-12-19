@@ -4,11 +4,12 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                               QScrollArea, QCheckBox, QGroupBox, QFileDialog, QMessageBox, QGridLayout)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
-from pymodbus.server.async_io import ModbusSerialServer, StartSerialServer
-from pymodbus.datastore import ModbusSlaveContext, ModbusServerContext, ModbusSequentialDataBlock
-from pymodbus.framer.rtu_framer import ModbusRtuFramer
+from pymodbus.server import StartAsyncSerialServer
+from pymodbus.datastore import ModbusServerContext, ModbusSlaveContext, ModbusSequentialDataBlock
+from pymodbus.transaction import ModbusRtuFramer
 import asyncio
 from csv_parser import MemoryMapParser
+from config import Config
 import serial.tools.list_ports
 import time
 import os
@@ -58,10 +59,10 @@ class ModbusEmulator(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("📡 EmuladorMODBUSRTU - PyQt6")
+        self.setWindowTitle("📡 EmuladorMODBUSRTU v1.0.0")
 
-        self.config_file = "emulator_modbus_config.txt"
-        self.csv_path = self.load_last_csv_path() or ""
+        self.config = Config()
+        self.csv_path = self.config.get('last_csv_path', '')
         self.coils_map = {}
         self.di_map = {}
         self.ir_map = {}
@@ -113,33 +114,35 @@ class ModbusEmulator(QMainWindow):
         config_layout.addWidget(QLabel("Porta:"))
         self.port_combo = QComboBox()
         self.port_combo.addItems(self.get_available_ports())
-        self.port_combo.setCurrentText("COM16")
+        self.port_combo.setCurrentText(self.config.get('serial_port', 'COM16'))
         config_layout.addWidget(self.port_combo)
         
         config_layout.addWidget(QLabel("Baudrate:"))
         self.baudrate_combo = QComboBox()
         self.baudrate_combo.addItems(["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"])
-        self.baudrate_combo.setCurrentText("19200")
+        self.baudrate_combo.setCurrentText(str(self.config.get('baudrate', 19200)))
         config_layout.addWidget(self.baudrate_combo)
         
         config_layout.addWidget(QLabel("Data Bits:"))
         self.bytesize_combo = QComboBox()
         self.bytesize_combo.addItems(["5", "6", "7", "8"])
-        self.bytesize_combo.setCurrentText("8")
+        self.bytesize_combo.setCurrentText(str(self.config.get('bytesize', 8)))
         config_layout.addWidget(self.bytesize_combo)
         
         config_layout.addWidget(QLabel("Paridade:"))
         self.parity_combo = QComboBox()
         self.parity_combo.addItems(["None", "Even", "Odd", "Mark", "Space"])
+        self.parity_combo.setCurrentText(self.config.get('parity', 'None'))
         config_layout.addWidget(self.parity_combo)
         
         config_layout.addWidget(QLabel("Stop Bits:"))
         self.stopbits_combo = QComboBox()
         self.stopbits_combo.addItems(["1", "2"])
+        self.stopbits_combo.setCurrentText(str(self.config.get('stopbits', 1)))
         config_layout.addWidget(self.stopbits_combo)
         
         config_layout.addWidget(QLabel("Slave ID:"))
-        self.slave_id_entry = QLineEdit("1")
+        self.slave_id_entry = QLineEdit(str(self.config.get('slave_id', 1)))
         self.slave_id_entry.setMaximumWidth(50)
         config_layout.addWidget(self.slave_id_entry)
         
@@ -266,28 +269,14 @@ class ModbusEmulator(QMainWindow):
         ports = [port.device for port in serial.tools.list_ports.comports()]
         return ports if ports else ["COM16"]
     
-    def load_last_csv_path(self):
-        try:
-            if os.path.exists(self.config_file):
-                with open(self.config_file, 'r') as f:
-                    return f.read().strip()
-        except:
-            pass
-        return None
-    
-    def save_last_csv_path(self, path):
-        try:
-            with open(self.config_file, 'w') as f:
-                f.write(path)
-        except:
-            pass
+
     
     def select_csv(self):
         filename, _ = QFileDialog.getOpenFileName(self, "Selecionar Mapa de Memória", "", "CSV files (*.csv);;All files (*.*)")
         if filename:
             self.csv_path = filename
             self.csv_label.setText(filename)
-            self.save_last_csv_path(filename)
+            self.config.set('last_csv_path', filename)
             self.load_csv()
     
     def open_csv_editor(self):
@@ -896,7 +885,7 @@ class ModbusEmulator(QMainWindow):
             self.server_ready = threading.Event()
             
             async def create_and_run_server():
-                self.server = await StartSerialServer(
+                self.server = await StartAsyncSerialServer(
                     context=self.context,
                     framer=ModbusRtuFramer,
                     port=port,
@@ -951,6 +940,16 @@ class ModbusEmulator(QMainWindow):
             self.status_label.setStyleSheet("color: green; font-weight: bold;")
             self.btn_toggle.setText("Parar Servidor")
             print(f"🚀 Servidor iniciado em {port} @ {baudrate} bps | Slave ID: {slave_id} (Broadcast: ON)")
+            
+            # Salvar configurações
+            self.config.update(
+                serial_port=port,
+                baudrate=baudrate,
+                bytesize=bytesize,
+                parity=self.parity_combo.currentText(),
+                stopbits=stopbits,
+                slave_id=slave_id
+            )
         except Exception as e:
             error_msg = str(e)
             QMessageBox.critical(self, "Erro ao iniciar servidor", f"Falha ao iniciar:\n\n{error_msg}")

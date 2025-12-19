@@ -1,0 +1,71 @@
+Tipo,RegBase0,RegBase1,Objeto,Unidade,Resolucao,Permissao,FCs,Intervalo,ValorInicial,Descricao
+IREG,300,30301,tensao_retificador,V,0.01,R,4,,,Apenas Leitura
+HREG,301,30302,vret1_ref,V,0.01,W,6,,,"Apenas escrita. Cálculo automático do ganho"
+HREG,302,30303,vret1_ganho,%,0.01,R/W,3/6,,,"Leitura e escrita."
+HREG,303,30304,vret1_offset,V,0.01,R/W,3/6,,,"Leitura e escrita. Cálculo automático do offset ao escrever 0xFFFF"
+IREG,304,30305,tensao_consumidor,V,0.01,R,4,,,Apenas Leitura
+HREG,305,30306,vcons_ref,V,0.01,W,6,,,"Apenas escrita. Cálculo automático do ganho"
+HREG,306,30307,vcons_ganho,%,0.01,R/W,3/6,,,"Leitura e escrita."
+HREG,307,30308,vcons_offset,V,0.01,R/W,3/6,,,"Leitura e escrita. Cálculo automático do offset ao escrever 0xFFFF"
+IREG,308,30309,corrente_retificador,A,0.01,R,4,,,Apenas Leitura
+HREG,309,30310,iret1_ref,A,0.01,W,6,,,"Apenas escrita. Cálculo automático do ganho"
+HREG,310,30311,iret1_ganho,%,0.01,R/W,3/6,,,"Leitura e escrita."
+HREG,311,30312,iret1_offset,A,0.01,R/W,3/6,,,"Leitura e escrita. Cálculo automático do offset ao escrever 0xFFFF"
+IREG,312,30313,corrente_bateria,A,0.01,R,4,,,Apenas Leitura
+HREG,313,30314,ibat_ref,A,0.01,W,6,,,"Apenas escrita. Cálculo automático do ganho"
+HREG,314,30315,ibat_ganho,%,0.01,R/W,3/6,,,"Leitura e escrita."
+HREG,315,30316,ibat_offset,A,0.01,R/W,3/6,,,"Leitura e escrita. Cálculo automático do offset ao escrever 0xFFFF"
+IREG,316,30317,tensao_rs,V,0.1,R,4,,,Apenas Leitura
+HREG,317,30318,vca_rs_ref,V,0.1,W,6,,,"Apenas escrita. Cálculo automático do ganho"
+HREG,318,30319,vca_rs_ganho,%,0.01,R/W,3/6,,,"Leitura e escrita."
+IREG,319,30320,tensao_st,V,0.1,R,4,,,Apenas Leitura
+HREG,320,30321,vca_st_ref,V,0.1,W,6,,,"Apenas escrita. Cálculo automático do ganho"
+HREG,321,30322,vca_st_ganho,%,0.01,R/W,3/6,,,"Leitura e escrita."
+IREG,322,30323,tensao_t,V,0.1,R,4,,,Apenas Leitura
+HREG,323,30324,vca_t_ref,V,0.1,W,6,,,"Apenas escrita. Cálculo automático do ganho"
+HREG,324,30325,vca_t_ganho,%,0.01,R/W,3/6,,,"Leitura e escrita."
+IREG,325,30326,corrente_r,A,0.01,R,4,,,Apenas Leitura
+HREG,326,30327,ica_r_ref,A,0.01,W,6,,,"Apenas escrita. Cálculo automático do ganho"
+HREG,327,30328,ica_r_ganho,%,0.01,R/W,3/6,,,"Leitura e escrita."
+IREG,328,30329,corrente_s,A,0.01,R,4,,,Apenas Leitura
+HREG,329,30330,ica_s_ref,A,0.01,W,6,,,"Apenas escrita. Cálculo automático do ganho"
+HREG,330,30331,ica_s_ganho,%,0.01,R/W,3/6,,,"Leitura e escrita."
+IREG,331,30332,corrente_t,A,0.01,R,4,,,Apenas Leitura
+HREG,332,30333,ica_t_ref,A,0.01,W,6,,,"Apenas escrita. Cálculo automático do ganho"
+HREG,333,30334,ica_t_ganho,%,0.01,R/W,3/6,,,"Leitura e escrita."
+HREG,334,30335,vret2_avg,V,0.01,R,3,,,"Apenas Leitura"
+HREG,335,30336,vret2_ref,V,0.01,W,6,,,"Apenas escrita. Cálculo automático do ganho"
+HREG,336,30337,vret2_ganho,%,0.01,R/W,3/6,,,"Leitura e escrita."
+HREG,337,30338,vret2_offset,V,0.01,R/W,3/6,,,"Leitura e escrita. Cálculo automático do offset ao escrever 0xFFFF"
+HREG,338,30339,iret2_avg,A,0.01,R,3,,,"Apenas Leitura"
+HREG,339,30340,iret2_ref,A,0.01,W,6,,,"Apenas escrita. Cálculo automático do ganho"
+HREG,340,30341,iret2_ganho,%,0.01,R/W,3/6,,,"Leitura e escrita."
+HREG,341,30342,iret2_offset,A,0.01,R/W,3/6,,,"Leitura e escrita. Cálculo automático do offset ao escrever 0xFFFF"
+HREG,342,30343,tret_avg,C,0.1,R,3,,,"Apenas Leitura"
+HREG,343,30344,tret_ref,C,0.1,W,6,,,"Apenas escrita. Cálculo automático do ganho"
+HREG,344,30345,tret_ganho,%,0.01,R/W,3/6,,,"Leitura e escrita."
+HREG,345,30346,tret_offset,C,0.1,R/W,3/6,,,"Leitura e escrita. Cálculo automático do offset ao escrever 0xFFFF"
+IREG,69,30070,frequencia,Hz,0.1,R,4,,,Frequencia da rede
+IREG,76,30077,temperatura_bateria,C,0.1,R,4,,,Temperatura da bateria
+DISC,200,10201,Teste_Din_bit0,none,1,R,2,,,Entrada digital bit 0
+DISC,201,10202,Teste_Din_bit1,none,1,R,2,,,Entrada digital bit 1
+DISC,202,10203,Teste_Din_bit2,none,1,R,2,,,Entrada digital bit 2
+DISC,203,10204,Teste_Din_bit3,none,1,R,2,,,Entrada digital bit 3
+DISC,204,10205,Teste_Din_bit4,none,1,R,2,,,Entrada digital bit 4
+DISC,205,10206,Teste_Din_bit5,none,1,R,2,,,Entrada digital bit 5
+DISC,206,10207,Teste_Din_bit6,none,1,R,2,,,Entrada digital bit 6
+DISC,207,10208,Teste_Din_bit7,none,1,R,2,,,Entrada digital bit 7
+COIL,208,209,Teste_Dout_pri_bit0,none,1,R/W,1/5,,OFF,Saida digital primaria bit 0
+COIL,209,210,Teste_Dout_pri_bit1,none,1,R/W,1/5,,OFF,Saida digital primaria bit 1
+COIL,210,211,Teste_Dout_pri_bit2,none,1,R/W,1/5,,OFF,Saida digital primaria bit 2
+COIL,211,212,Teste_Dout_pri_bit3,none,1,R/W,1/5,,OFF,Saida digital primaria bit 3
+COIL,212,213,Teste_Dout_pri_bit4,none,1,R/W,1/5,,OFF,Saida digital primaria bit 4
+COIL,213,214,Teste_Dout_pri_bit5,none,1,R/W,1/5,,OFF,Saida digital primaria bit 5
+COIL,214,215,Teste_Dout_exp1_bit0,none,1,R/W,1/5,,OFF,Saida digital expansao 1 bit 0
+COIL,215,216,Teste_Dout_exp1_bit1,none,1,R/W,1/5,,OFF,Saida digital expansao 1 bit 1
+COIL,216,217,Teste_Dout_exp1_bit2,none,1,R/W,1/5,,OFF,Saida digital expansao 1 bit 2
+COIL,217,218,Teste_Dout_exp1_bit3,none,1,R/W,1/5,,OFF,Saida digital expansao 1 bit 3
+COIL,218,219,Teste_Dout_exp1_bit4,none,1,R/W,1/5,,OFF,Saida digital expansao 1 bit 4
+COIL,219,220,Teste_Dout_exp1_bit5,none,1,R/W,1/5,,OFF,Saida digital expansao 1 bit 5
+COIL,220,221,Teste_Dout_exp1_bit6,none,1,R/W,1/5,,OFF,Saida digital expansao 1 bit 6
+COIL,221,222,Teste_Dout_exp1_bit7,none,1,R/W,1/5,,OFF,Saida digital expansao 1 bit 7

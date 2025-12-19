@@ -1,0 +1,276 @@
+from pymodbus.client import ModbusSerialClient
+from pymodbus.exceptions import ModbusException
+from config import (MONITORING_REGISTERS, CALIBRATION_REGISTERS, SCALE_FACTORS, BLOCK_REGISTER_MAP,
+                   SLAVE_ADDRESS, BAUDRATE, PARITY, STOPBITS, BYTESIZE, TIMEOUT)
+from channel import ChannelReader
+import logging
+
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class ModbusClient:
+    def __init__(self):
+        self.client = None
+        self.connected = False
+        self.last_readings = {}
+        self.consecutive_errors = 0
+        self.max_errors = 4
+        self.channel_reader = None
+
+    def connect(self, port):
+        try:
+            logger.info(f"Conectando à porta {port}...")
+            self.client = ModbusSerialClient(
+                port=port,
+                baudrate=BAUDRATE,
+                bytesize=BYTESIZE,
+                parity=PARITY,
+                stopbits=STOPBITS,
+                timeout=TIMEOUT
+            )
+            self.connected = self.client.connect()
+            if self.connected:
+                self.channel_reader = ChannelReader(self.client)
+                logger.info("Conexão estabelecida com sucesso.")
+            else:
+                logger.error("Falha ao conectar.")
+            return self.connected
+        except Exception as e:
+            logger.error(f"Erro na conexão: {e}")
+            return False
+
+    def disconnect(self):
+        if self.client:
+            self.client.close()
+            logger.info("Desconectado.")
+        self.connected = False
+        self.last_readings.clear()
+        self.consecutive_errors = 0
+
+    def test_connection(self):
+        if not self.connected:
+            return False
+        
+        # Lista de registros para testar (do mais provável ao menos)
+        test_registers = [
+            ('tensao_retificador', MONITORING_REGISTERS['tensao_retificador']),
+            ('temperatura_bateria', MONITORING_REGISTERS['temperatura_bateria']),
+            ('frequencia', MONITORING_REGISTERS['frequencia'])
+        ]
+        
+        for name, address in test_registers:
+            try:
+                logger.debug(f"Testando conexão com {name} (registro {address})")
+                response = self.client.read_input_registers(address=address, count=1, slave=SLAVE_ADDRESS)
+                
+                if not response.isError():
+                    logger.info(f"Teste de conexão bem-sucedido com {name}. Valor: {response.registers[0]}")
+                    return True
+                else:
+                    logger.warning(f"Falha no teste com {name}: {response}")
+                    
+            except Exception as e:
+                logger.warning(f"Exceção testando {name}: {e}")
+                continue
+        
+        logger.error("Todos os testes de conexão falharam")
+        return False
+
+    def read_monitoring_registers(self):
+        """Lê registros usando sistema de canais genérico"""
+        if not self.connected or not self.client or not self.channel_reader:
+            return None
+
+        try:
+            results = self.channel_reader.read_all_channels()
+            self.consecutive_errors = 0
+            logger.info("Leitura com sistema de canais realizada com sucesso")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Erro na leitura com sistema de canais: {e}")
+            return self._read_individual_fallback()
+    
+    def _read_individual_fallback(self):
+        """Fallback para leitura individual - SEM cache"""
+        logger.info("Usando fallback para leitura individual")
+        results = {}
+        error_count = 0
+
+        for name, address in MONITORING_REGISTERS.items():
+            try:
+                response = self.client.read_input_registers(address=address, count=1, slave=SLAVE_ADDRESS)
+                
+                if response.isError():
+                    results[name] = None
+                    error_count += 1
+                else:
+                    raw_value = response.registers[0]
+                    
+                    # Converte para signed para tensões e correntes CC
+                    if name in ['tensao_retificador', 'tensao_consumidor', 'corrente_retificador', 'corrente_bateria']:
+                        if raw_value > 32767:
+                            signed_value = raw_value - 65536
+                        else:
+                            signed_value = raw_value
+                        factor = SCALE_FACTORS.get(name, 1)
+                        value = signed_value / factor
+                    else:
+                        factor = SCALE_FACTORS.get(name, 1)
+                        value = raw_value / factor
+                    
+                    results[name] = value
+
+            except Exception as e:
+                logger.error(f"Erro lendo {name}: {e}")
+                results[name] = None
+                error_count += 1
+
+        # Retorna sempre os valores lidos, mesmo com erros
+        self.consecutive_errors = 0 if error_count == 0 else self.consecutive_errors + 1
+        return results
+
+    def read_monitoring_register(self, register_address):
+        """Lê um registro de monitoramento específico (com sinal)"""
+        if not self.connected:
+            return None
+        try:
+            response = self.client.read_input_registers(address=register_address, count=1, slave=SLAVE_ADDRESS)
+            if not response.isError():
+                # Converte de unsigned para signed (16-bit)
+                raw_value = response.registers[0]
+                if raw_value > 32767:
+                    signed_value = raw_value - 65536
+                else:
+                    signed_value = raw_value
+                return signed_value
+            return None
+        except Exception as e:
+            logger.error(f"Erro lendo monitoramento {register_address}: {e}")
+            return None
+
+    def read_calibration_register(self, register_address):
+        """Lê um registro de calibração específico (com sinal)"""
+        if not self.connected:
+            return None
+        try:
+            response = self.client.read_holding_registers(address=register_address, count=1, slave=SLAVE_ADDRESS)
+            if not response.isError():
+                # Converte de unsigned para signed (16-bit)
+                raw_value = response.registers[0]
+                if raw_value > 32767:
+                    signed_value = raw_value - 65536
+                else:
+                    signed_value = raw_value
+                return signed_value
+            return None
+        except Exception as e:
+            logger.error(f"Erro lendo calibração {register_address}: {e}")
+            return None
+
+    def write_calibration_register(self, register_address, value):
+        """Escreve um registro de calibração (com sinal)"""
+        if not self.connected:
+            return False
+        try:
+            # Converte de signed para unsigned (16-bit) se necessário
+            if value < 0:
+                unsigned_value = value + 65536
+            else:
+                unsigned_value = value
+            
+            # Garante que está no range 0-65535
+            unsigned_value = max(0, min(65535, unsigned_value))
+            
+            response = self.client.write_register(address=register_address, value=unsigned_value, slave=SLAVE_ADDRESS)
+            success = not response.isError()
+            if success:
+                logger.info(f"Escrita bem-sucedida: {register_address} = {value} (raw: {unsigned_value})")
+            else:
+                logger.error(f"Erro na escrita: {response}")
+            return success
+        except Exception as e:
+            logger.error(f"Erro escrevendo {register_address}: {e}")
+            return False
+
+    def auto_offset(self, channel):
+        """Executa auto-offset escrevendo 0xFFFF"""
+        if channel not in CALIBRATION_REGISTERS:
+            return False
+        offset_reg = CALIBRATION_REGISTERS[channel].get('offset')
+        if offset_reg:
+            return self.write_calibration_register(offset_reg, 0xFFFF)
+        return False
+
+    def read_digital_inputs(self):
+        """Lê entradas digitais (registros 200-207) usando FC 0x02"""
+        if not self.connected:
+            return None
+        try:
+            # Lê endereços 200-207 (8 bits) usando FC 0x02 (Read Discrete Inputs)
+            response = self.client.read_discrete_inputs(address=200, count=8, slave=SLAVE_ADDRESS)
+            if not response.isError():
+                return response.bits[:8]  # Retorna apenas os 8 bits lidos
+            else:
+                logger.error(f"Erro lendo entradas digitais: {response}")
+                return None
+        except Exception as e:
+            logger.error(f"Exceção lendo entradas digitais: {e}")
+            return None
+
+    def write_coil(self, address, value):
+        """Escreve um coil usando FC 0x05"""
+        if not self.connected:
+            return False
+        try:
+            response = self.client.write_coil(address=address, value=bool(value), slave=SLAVE_ADDRESS)
+            return not response.isError()
+        except Exception as e:
+            logger.error(f"Erro escrevendo coil {address}: {e}")
+            return False
+
+    def read_coils(self, address, count):
+        """Lê coils usando FC 0x01"""
+        if not self.connected:
+            return None
+        try:
+            response = self.client.read_coils(address=address, count=count, slave=SLAVE_ADDRESS)
+            if not response.isError():
+                return response.bits[:count]
+            else:
+                logger.error(f"Erro lendo coils: {response}")
+                return None
+        except Exception as e:
+            logger.error(f"Exceção lendo coils: {e}")
+            return None
+
+    def inicializar_saidas(self):
+        """Inicializa todas as saídas digitais em 0"""
+        if not self.connected:
+            return False
+        try:
+            for i in range(6):
+                self.write_coil(208 + i, False)
+            return True
+        except Exception as e:
+            logger.error(f"Erro inicializando saídas: {e}")
+            return False
+    
+    def inicializar_eeprom(self):
+        """Inicializa EEPROM enviando valor 6 para endereço 500 usando FC 0x06"""
+        if not self.connected:
+            return False
+        try:
+            response = self.client.write_register(address=500, value=6, slave=SLAVE_ADDRESS)
+            success = not response.isError()
+            if success:
+                logger.info("EEPROM inicializada com sucesso (500 = 6)")
+            else:
+                logger.error(f"Erro inicializando EEPROM: {response}")
+            return success
+        except Exception as e:
+            logger.error(f"Erro inicializando EEPROM: {e}")
+            return False
+
+    def __del__(self):
+        self.disconnect()

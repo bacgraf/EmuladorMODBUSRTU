@@ -4,35 +4,14 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                               QScrollArea, QCheckBox, QGroupBox, QFileDialog, QMessageBox, QGridLayout)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
-from pymodbus.server.async_io import ModbusSerialServer, StartSerialServer
-from pymodbus.datastore import ModbusSlaveContext, ModbusServerContext, ModbusSequentialDataBlock
-from pymodbus.framer.rtu_framer import ModbusRtuFramer
-import asyncio
 from csv_parser import MemoryMapParser
+from config import Config
+from modbus_server_multiprocess import ModbusServerMultiprocess as ModbusServer
 import serial.tools.list_ports
+import threading
 import time
 import os
 import sys
-import threading
-import traceback
-
-class EventDrivenDataBlock(ModbusSequentialDataBlock):
-    """DataBlock com callbacks para notificação imediata de mudanças"""
-    def __init__(self, address, values, callback=None):
-        super().__init__(address, values)
-        self.callback = callback
-        self.base_address = address
-    
-    def setValues(self, address, values):
-        super().setValues(address, values)
-        if self.callback:
-            # Notificar mudança imediatamente
-            # address já é o endereço Modbus correto
-            for i, value in enumerate(values):
-                try:
-                    self.callback(address + i, value)
-                except Exception as e:
-                    print(f"⚠️ Erro no callback addr={address+i}: {e}")
 
 class MonitorThread(QThread):
     update_coil = pyqtSignal(int, bool)
@@ -58,17 +37,15 @@ class ModbusEmulator(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("📡 EmuladorMODBUSRTU - PyQt6")
+        self.setWindowTitle("📡 EmuladorMODBUSRTU v1.0.0")
 
-        self.config_file = "emulator_modbus_config.txt"
-        self.csv_path = self.load_last_csv_path() or ""
+        self.config = Config()
+        self.csv_path = self.config.get('last_csv_path', '')
         self.coils_map = {}
         self.di_map = {}
         self.ir_map = {}
         self.hr_map = {}
-        self.store = None
-        self.context = None
-        self.server = None
+        self.modbus = ModbusServer()
         self.server_running = False
         
         self.coil_controls = {}
@@ -76,12 +53,23 @@ class ModbusEmulator(QMainWindow):
         self.ir_controls = {}
         self.hr_controls = {}
         
-        self.server_thread = None
-        self.serial_port = None  # Guardar referência da porta serial
         self.parity_map = {"None": "N", "Even": "E", "Odd": "O", "Mark": "M", "Space": "S"}
+        
         
         # Conectar signal de erro
         self.server_error.connect(self.on_server_error)
+        
+        # Monitoramento de porta
+        self.port_check_timer = None
+        self.port_check_count = 0
+        self.port_check_start = None
+        self.port_check_port = None
+        self.port_check_baudrate = None
+        
+        # Polling timer para atualizar UI via shared memory
+        self.polling_timer = QTimer()
+        self.polling_timer.timeout.connect(self.poll_shared_memory)
+        self.last_values = {'coils': {}, 'di': {}, 'ir': {}, 'hr': {}}
 
         self.setup_ui()
         self.apply_styles()
@@ -113,33 +101,35 @@ class ModbusEmulator(QMainWindow):
         config_layout.addWidget(QLabel("Porta:"))
         self.port_combo = QComboBox()
         self.port_combo.addItems(self.get_available_ports())
-        self.port_combo.setCurrentText("COM16")
+        self.port_combo.setCurrentText(self.config.get('serial_port', 'COM16'))
         config_layout.addWidget(self.port_combo)
         
         config_layout.addWidget(QLabel("Baudrate:"))
         self.baudrate_combo = QComboBox()
         self.baudrate_combo.addItems(["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"])
-        self.baudrate_combo.setCurrentText("19200")
+        self.baudrate_combo.setCurrentText(str(self.config.get('baudrate', 19200)))
         config_layout.addWidget(self.baudrate_combo)
         
         config_layout.addWidget(QLabel("Data Bits:"))
         self.bytesize_combo = QComboBox()
         self.bytesize_combo.addItems(["5", "6", "7", "8"])
-        self.bytesize_combo.setCurrentText("8")
+        self.bytesize_combo.setCurrentText(str(self.config.get('bytesize', 8)))
         config_layout.addWidget(self.bytesize_combo)
         
         config_layout.addWidget(QLabel("Paridade:"))
         self.parity_combo = QComboBox()
         self.parity_combo.addItems(["None", "Even", "Odd", "Mark", "Space"])
+        self.parity_combo.setCurrentText(self.config.get('parity', 'None'))
         config_layout.addWidget(self.parity_combo)
         
         config_layout.addWidget(QLabel("Stop Bits:"))
         self.stopbits_combo = QComboBox()
         self.stopbits_combo.addItems(["1", "2"])
+        self.stopbits_combo.setCurrentText(str(self.config.get('stopbits', 1)))
         config_layout.addWidget(self.stopbits_combo)
         
         config_layout.addWidget(QLabel("Slave ID:"))
-        self.slave_id_entry = QLineEdit("1")
+        self.slave_id_entry = QLineEdit(str(self.config.get('slave_id', 1)))
         self.slave_id_entry.setMaximumWidth(50)
         config_layout.addWidget(self.slave_id_entry)
         
@@ -160,6 +150,23 @@ class ModbusEmulator(QMainWindow):
         # Tabs
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
+        
+        # Legenda de permissões
+        legend_layout = QHBoxLayout()
+        legend_layout.addStretch()
+        legend_r = QLabel("🔵 R (Somente Leitura)")
+        legend_r.setStyleSheet("color: #2196F3; font-weight: bold;")
+        legend_layout.addWidget(legend_r)
+        legend_layout.addWidget(QLabel(" | "))
+        legend_rw = QLabel("🟢 R/W (Leitura/Escrita)")
+        legend_rw.setStyleSheet("color: #4CAF50; font-weight: bold;")
+        legend_layout.addWidget(legend_rw)
+        legend_layout.addWidget(QLabel(" | "))
+        legend_rwb = QLabel("🟡 R/W/B (Leitura/Escrita/Broadcast)")
+        legend_rwb.setStyleSheet("color: #FBC02D; font-weight: bold;")
+        legend_layout.addWidget(legend_rwb)
+        legend_layout.addStretch()
+        layout.addLayout(legend_layout)
         
         self.create_tabs()
     
@@ -266,28 +273,14 @@ class ModbusEmulator(QMainWindow):
         ports = [port.device for port in serial.tools.list_ports.comports()]
         return ports if ports else ["COM16"]
     
-    def load_last_csv_path(self):
-        try:
-            if os.path.exists(self.config_file):
-                with open(self.config_file, 'r') as f:
-                    return f.read().strip()
-        except:
-            pass
-        return None
-    
-    def save_last_csv_path(self, path):
-        try:
-            with open(self.config_file, 'w') as f:
-                f.write(path)
-        except:
-            pass
+
     
     def select_csv(self):
         filename, _ = QFileDialog.getOpenFileName(self, "Selecionar Mapa de Memória", "", "CSV files (*.csv);;All files (*.*)")
         if filename:
             self.csv_path = filename
             self.csv_label.setText(filename)
-            self.save_last_csv_path(filename)
+            self.config.set('last_csv_path', filename)
             self.load_csv()
     
     def open_csv_editor(self):
@@ -331,27 +324,22 @@ class ModbusEmulator(QMainWindow):
             for addr, reg in self.hr_map.items():
                 hr_block[addr] = reg['valor_inicial']
             
-            # Criar DataBlocks com callbacks para event-driven updates
-            self.store = ModbusSlaveContext(
-                co=EventDrivenDataBlock(0, coils_block, lambda addr, val: self.on_coil_changed_callback(addr, val)),
-                di=EventDrivenDataBlock(0, di_block, lambda addr, val: self.on_di_changed_callback(addr, val)),
-                ir=EventDrivenDataBlock(0, ir_block, lambda addr, val: self.on_ir_changed_callback(addr, val)),
-                hr=EventDrivenDataBlock(0, hr_block, lambda addr, val: self.on_hr_changed_callback(addr, val))
+            # Extrair permissões dos mapas com offset +1
+            coils_perm = {addr + 1: reg.get('permissao', 'R/W') for addr, reg in self.coils_map.items()}
+            di_perm = {addr + 1: reg.get('permissao', 'R') for addr, reg in self.di_map.items()}
+            ir_perm = {addr + 1: reg.get('permissao', 'R') for addr, reg in self.ir_map.items()}
+            hr_perm = {addr + 1: reg.get('permissao', 'R/W') for addr, reg in self.hr_map.items()}
+            
+            # Criar datastore com callbacks e permissões
+            self.modbus.create_datastore(
+                coils_block, di_block, ir_block, hr_block,
+                lambda addr, val: self.on_coil_changed_callback(addr, val),
+                lambda addr, val: self.on_di_changed_callback(addr, val),
+                lambda addr, val: self.on_ir_changed_callback(addr, val),
+                lambda addr, val: self.on_hr_changed_callback(addr, val),
+                coils_perm, di_perm, ir_perm, hr_perm
             )
             
-            # DEBUG: Verificar valores no store após criação
-            print("\n🔍 DEBUG: Verificando Store vs Array vs CSV")
-            print("="*60)
-            for addr in sorted(self.coils_map.keys()):
-                array_val = coils_block[addr]
-                csv_val = self.coils_map[addr]['valor_inicial']
-                store_val = self.store.getValues(1, addr, 1)[0]
-                match = "✅" if (array_val == csv_val == store_val) else "❌"
-                print(f"{match} Coil {addr}: CSV={csv_val} | Array[{addr}]={array_val} | Store={store_val}")
-            print("="*60 + "\n")
-            
-            # Contexto será recriado no start_server com Slave ID correto
-            self.context = None
             self.print_memory_map()
             
             self.create_tabs()
@@ -369,37 +357,39 @@ class ModbusEmulator(QMainWindow):
             QMessageBox.critical(self, "Erro", f"Falha ao carregar Mapa de Memória:\n{str(e)}")
     
     def print_memory_map(self):
-        print("\n" + "="*80)
-        print("MAPA DE MEMÓRIA COMPLETO")
-        print("="*80)
-        
-        print(f"\n[COILS - Função 01/05] Total: {len(self.coils_map)}")
-        print("-" * 80)
-        for addr in sorted(self.coils_map.keys()):
-            reg = self.coils_map[addr]
-            print(f"  Base0: {addr:5d} | Base1: {reg['base1']:5d} | Hex: 0x{addr:04X} | {reg['nome'][:45]:45s} | Val: {reg['valor_inicial']}")
-        
-        print(f"\n[DISCRETE INPUTS - Função 02] Total: {len(self.di_map)}")
-        print("-" * 80)
-        for addr in sorted(self.di_map.keys()):
-            reg = self.di_map[addr]
-            print(f"  Base0: {addr:5d} | Base1: {reg['base1']:5d} | Hex: 0x{addr:04X} | {reg['nome'][:45]:45s} | Val: {reg['valor_inicial']}")
-        
-        print(f"\n[INPUT REGISTERS - Função 04] Total: {len(self.ir_map)}")
-        print("-" * 80)
-        for addr in sorted(self.ir_map.keys()):
-            reg = self.ir_map[addr]
-            print(f"  Base0: {addr:5d} | Base1: {reg['base1']:5d} | Hex: 0x{addr:04X} | {reg['nome'][:35]:35s} | {reg['unidade']:8s} | Val: {reg['valor_inicial']}")
-        
-        print(f"\n[HOLDING REGISTERS - Função 03/06/16] Total: {len(self.hr_map)}")
-        print("-" * 80)
-        for addr in sorted(self.hr_map.keys()):
-            reg = self.hr_map[addr]
-            print(f"  Base0: {addr:5d} | Base1: {reg['base1']:5d} | Hex: 0x{addr:04X} | {reg['nome'][:35]:35s} | {reg['unidade']:8s} | Val: {reg['valor_inicial']}")
-        
-        print("\n" + "="*80)
-        print(f"TOTAL: {len(self.coils_map) + len(self.di_map) + len(self.ir_map) + len(self.hr_map)}")
-        print("="*80 + "\n")
+        # LOG DETALHADO - Descomente para debug
+        pass
+        # print("\n" + "="*80)
+        # print("MAPA DE MEMÓRIA COMPLETO")
+        # print("="*80)
+        # 
+        # print(f"\n[COILS - Função 01/05] Total: {len(self.coils_map)}")
+        # print("-" * 80)
+        # for addr in sorted(self.coils_map.keys()):
+        #     reg = self.coils_map[addr]
+        #     print(f"  Base0: {addr:5d} | Base1: {reg['base1']:5d} | Hex: 0x{addr:04X} | {reg['nome'][:45]:45s} | Val: {reg['valor_inicial']}")
+        # 
+        # print(f"\n[DISCRETE INPUTS - Função 02] Total: {len(self.di_map)}")
+        # print("-" * 80)
+        # for addr in sorted(self.di_map.keys()):
+        #     reg = self.di_map[addr]
+        #     print(f"  Base0: {addr:5d} | Base1: {reg['base1']:5d} | Hex: 0x{addr:04X} | {reg['nome'][:45]:45s} | Val: {reg['valor_inicial']}")
+        # 
+        # print(f"\n[INPUT REGISTERS - Função 04] Total: {len(self.ir_map)}")
+        # print("-" * 80)
+        # for addr in sorted(self.ir_map.keys()):
+        #     reg = self.ir_map[addr]
+        #     print(f"  Base0: {addr:5d} | Base1: {reg['base1']:5d} | Hex: 0x{addr:04X} | {reg['nome'][:35]:35s} | {reg['unidade']:8s} | Val: {reg['valor_inicial']}")
+        # 
+        # print(f"\n[HOLDING REGISTERS - Função 03/06/16] Total: {len(self.hr_map)}")
+        # print("-" * 80)
+        # for addr in sorted(self.hr_map.keys()):
+        #     reg = self.hr_map[addr]
+        #     print(f"  Base0: {addr:5d} | Base1: {reg['base1']:5d} | Hex: 0x{addr:04X} | {reg['nome'][:35]:35s} | {reg['unidade']:8s} | Val: {reg['valor_inicial']}")
+        # 
+        # print("\n" + "="*80)
+        # print(f"TOTAL: {len(self.coils_map) + len(self.di_map) + len(self.ir_map) + len(self.hr_map)}")
+        # print("="*80 + "\n")
     
     def create_tabs(self):
         self.tabs.clear()
@@ -612,12 +602,21 @@ class ModbusEmulator(QMainWindow):
                 l1.setFixedWidth(60)
                 grid.addWidget(l1, row, 1)
                 
-                grid.addWidget(QLabel(reg['nome']), row, 2)
+                nome_label = QLabel(reg['nome'])
+                permissao = reg.get('permissao', 'R').upper()
+                if 'B' in permissao:
+                    nome_label.setStyleSheet("background-color: #FFF9C4; padding: 2px;")
+                elif 'W' in permissao:
+                    nome_label.setStyleSheet("background-color: #C8E6C9; padding: 2px;")
+                else:
+                    nome_label.setStyleSheet("background-color: #BBDEFB; padding: 2px;")
+                grid.addWidget(nome_label, row, 2)
                 
                 entry = QLineEdit(str(reg['valor_inicial']))
                 entry.setMinimumHeight(24)
                 entry.setFixedWidth(60)
                 entry.setStyleSheet("background-color: white;")
+                entry.textChanged.connect(lambda text, e=entry: e.setText(text.replace(',', '.')) if ',' in text else None)
                 entry.editingFinished.connect(lambda a=addr, e=entry: self.update_ir(a, e.text()))
                 grid.addWidget(entry, row, 3)
                 
@@ -688,12 +687,21 @@ class ModbusEmulator(QMainWindow):
                 l1.setFixedWidth(60)
                 grid.addWidget(l1, row, 1)
                 
-                grid.addWidget(QLabel(reg['nome']), row, 2)
+                nome_label = QLabel(reg['nome'])
+                permissao = reg.get('permissao', 'R').upper()
+                if 'B' in permissao:
+                    nome_label.setStyleSheet("background-color: #FFF9C4; padding: 2px;")
+                elif 'W' in permissao:
+                    nome_label.setStyleSheet("background-color: #C8E6C9; padding: 2px;")
+                else:
+                    nome_label.setStyleSheet("background-color: #BBDEFB; padding: 2px;")
+                grid.addWidget(nome_label, row, 2)
                 
                 entry = QLineEdit(str(reg['valor_inicial']))
                 entry.setMinimumHeight(24)
                 entry.setFixedWidth(60)
                 entry.setStyleSheet("background-color: white;")
+                entry.textChanged.connect(lambda text, e=entry: e.setText(text.replace(',', '.')) if ',' in text else None)
                 entry.editingFinished.connect(lambda a=addr, e=entry: self.update_hr(a, e.text()))
                 grid.addWidget(entry, row, 3)
                 
@@ -720,8 +728,11 @@ class ModbusEmulator(QMainWindow):
         else:
             btn.setText("OFF")
             btn.setStyleSheet("background-color: #95a5a6; color: white;")
-        if self.store:
-            self.store.setValues(1, addr, [1 if checked else 0])
+        
+        reg_name = self.coils_map[addr]['nome']
+        # print(f"\n👉 [UI CLICK] Clicou em COIL Base0={addr} ({reg_name}) → Enviando valor {1 if checked else 0} para endereço {addr}")
+        
+        self.modbus.set_value(1, addr + 1, 1 if checked else 0)
     
     def toggle_di(self, addr, btn, checked):
         if checked:
@@ -730,47 +741,49 @@ class ModbusEmulator(QMainWindow):
         else:
             btn.setText("OFF")
             btn.setStyleSheet("background-color: #95a5a6; color: white;")
-        if self.store:
-            self.store.setValues(2, addr, [1 if checked else 0])
+        
+        reg_name = self.di_map[addr]['nome']
+        # print(f"\n👉 [UI CLICK] Clicou em DI Base0={addr} ({reg_name}) → Enviando valor {1 if checked else 0} para endereço {addr}")
+        
+        self.modbus.set_value(2, addr + 1, 1 if checked else 0)
     
     def update_ir(self, addr, value):
         try:
-            if self.store:
-                self.store.setValues(4, addr, [int(value)])
+            reg_name = self.ir_map[addr]['nome']
+            resolucao = float(self.ir_map[addr].get('resolucao', 1))
+            value = value.replace(',', '.')
+            valor_modbus = int(float(value) / resolucao)
+            # print(f"\n👉 [UI CLICK] Editou IR Base0={addr} ({reg_name}) → Valor real: {value}, Modbus: {valor_modbus} (res={resolucao})")
+            self.modbus.set_value(4, addr + 1, valor_modbus)
         except:
             pass
     
     def update_hr(self, addr, value):
         try:
-            if self.store:
-                self.store.setValues(3, addr, [int(value)])
+            reg_name = self.hr_map[addr]['nome']
+            resolucao = float(self.hr_map[addr].get('resolucao', 1))
+            value = value.replace(',', '.')
+            valor_modbus = int(float(value) / resolucao)
+            # print(f"\n👉 [UI CLICK] Editou HR Base0={addr} ({reg_name}) → Valor real: {value}, Modbus: {valor_modbus} (res={resolucao})")
+            self.modbus.set_value(3, addr + 1, valor_modbus)
         except:
             pass
     
     def on_coil_changed_callback(self, addr, value):
-        """Callback chamado imediatamente quando coil muda (event-driven)"""
-        # ModbusSequentialDataBlock adiciona +1 internamente, compensar
-        real_addr = addr - 1
-        if hasattr(self, 'monitor_thread'):
-            self.monitor_thread.update_coil.emit(real_addr, bool(value))
+        """Callback não usado em multiprocessing - polling substituí"""
+        pass
     
     def on_di_changed_callback(self, addr, value):
-        """Callback chamado imediatamente quando discrete input muda"""
-        real_addr = addr - 1
-        if hasattr(self, 'monitor_thread'):
-            self.monitor_thread.update_di.emit(real_addr, bool(value))
+        """Callback não usado em multiprocessing - polling substituí"""
+        pass
     
     def on_ir_changed_callback(self, addr, value):
-        """Callback chamado imediatamente quando input register muda"""
-        real_addr = addr - 1
-        if hasattr(self, 'monitor_thread'):
-            self.monitor_thread.update_ir.emit(real_addr, int(value))
+        """Callback não usado em multiprocessing - polling substituí"""
+        pass
     
     def on_hr_changed_callback(self, addr, value):
-        """Callback chamado imediatamente quando holding register muda"""
-        real_addr = addr - 1
-        if hasattr(self, 'monitor_thread'):
-            self.monitor_thread.update_hr.emit(real_addr, int(value))
+        """Callback não usado em multiprocessing - polling substituí"""
+        pass
     
     def on_coil_changed(self, addr, value):
         if addr in self.coil_controls:
@@ -802,16 +815,20 @@ class ModbusEmulator(QMainWindow):
         if addr in self.ir_controls:
             entry = self.ir_controls[addr]
             if not entry.hasFocus():
+                resolucao = float(self.ir_map[addr].get('resolucao', 1))
+                valor_real = value * resolucao
                 entry.blockSignals(True)
-                entry.setText(str(value))
+                entry.setText(str(valor_real))
                 entry.blockSignals(False)
     
     def on_hr_changed(self, addr, value):
         if addr in self.hr_controls:
             entry = self.hr_controls[addr]
             if not entry.hasFocus():
+                resolucao = float(self.hr_map[addr].get('resolucao', 1))
+                valor_real = value * resolucao
                 entry.blockSignals(True)
-                entry.setText(str(value))
+                entry.setText(str(valor_real))
                 entry.blockSignals(False)
     
     def toggle_server(self):
@@ -824,7 +841,7 @@ class ModbusEmulator(QMainWindow):
         if self.server_running:
             return
         
-        if not self.store:
+        if not self.modbus.store:
             QMessageBox.warning(self, "Aviso", "Carregue um Mapa de Memória antes de iniciar o servidor")
             return
         
@@ -885,61 +902,10 @@ class ModbusEmulator(QMainWindow):
             print(f"❌ {error_msg}")
             return
         
-        try:
-            # Criar contexto com Slave ID específico e suporte a broadcast
-            self.context = ModbusServerContext(slaves={
-                slave_id: self.store,  # Slave específico
-                0: self.store          # Broadcast (ID 0)
-            }, single=False)
-            
-            # Criar e iniciar servidor async
-            self.server_ready = threading.Event()
-            
-            async def create_and_run_server():
-                self.server = await StartSerialServer(
-                    context=self.context,
-                    framer=ModbusRtuFramer,
-                    port=port,
-                    baudrate=baudrate,
-                    bytesize=bytesize,
-                    parity=parity,
-                    stopbits=stopbits,
-                    timeout=1
-                )
-                # Guardar referência da porta serial para fechar depois
-                try:
-                    if hasattr(self.server, 'protocol') and hasattr(self.server.protocol, 'transport'):
-                        if hasattr(self.server.protocol.transport, '_serial'):
-                            self.serial_port = self.server.protocol.transport._serial
-                            print(f"🔗 Referência da porta serial capturada")
-                except Exception as e:
-                    print(f"⚠️ Não foi possível capturar porta: {e}")
-                
-                self.server_ready.set()
-                # Manter servidor rodando
-                await asyncio.Event().wait()
-            
-            def run_async_server():
-                self.server_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(self.server_loop)
-                try:
-                    self.server_loop.run_until_complete(create_and_run_server())
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    print(f"⚠️ Servidor encerrado: {e}")
-                finally:
-                    self.server_loop.close()
-            
-            self.server_thread = threading.Thread(
-                target=run_async_server,
-                daemon=True
-            )
-            self.server_thread.start()
-            
-            # Aguardar servidor iniciar (não bloqueia se demorar)
-            self.server_ready.wait(timeout=1)
-            
+        # Iniciar servidor usando módulo
+        success, message = self.modbus.start(port, baudrate, bytesize, parity, stopbits, slave_id)
+        
+        if success:
             self.server_running = True
             self.port_combo.setEnabled(False)
             self.baudrate_combo.setEnabled(False)
@@ -950,28 +916,24 @@ class ModbusEmulator(QMainWindow):
             self.status_label.setText(f"🟢 Rodando (ID {slave_id})")
             self.status_label.setStyleSheet("color: green; font-weight: bold;")
             self.btn_toggle.setText("Parar Servidor")
-            print(f"🚀 Servidor iniciado em {port} @ {baudrate} bps | Slave ID: {slave_id} (Broadcast: ON)")
-        except Exception as e:
-            error_msg = str(e)
-            QMessageBox.critical(self, "Erro ao iniciar servidor", f"Falha ao iniciar:\n\n{error_msg}")
-            print(f"❌ Erro ao iniciar servidor: {error_msg}")
-            # Reverter estado
-            self.server_running = False
-            self.port_combo.setEnabled(True)
-            self.baudrate_combo.setEnabled(True)
-            self.bytesize_combo.setEnabled(True)
-            self.parity_combo.setEnabled(True)
-            self.stopbits_combo.setEnabled(True)
-            self.slave_id_entry.setEnabled(True)
-            # Limpar recursos
-            if hasattr(self, 'server') and self.server:
-                try:
-                    self.server.server_close()
-                except:
-                    pass
-            self.server = None
-            self.server_thread = None
-            self.server_loop = None
+            print(message)
+            
+            # Salvar configurações
+            self.config.update(
+                serial_port=port,
+                baudrate=baudrate,
+                bytesize=bytesize,
+                parity=self.parity_combo.currentText(),
+                stopbits=stopbits,
+                slave_id=slave_id
+            )
+            
+            # Iniciar polling para atualizar UI (multiprocessing não tem callbacks)
+            # print("🔄 Iniciando polling de shared memory (100ms)...")
+            self.polling_timer.start(100)  # A cada 100ms
+        else:
+            QMessageBox.critical(self, "Erro", f"Falha ao iniciar servidor:\n\n{message}")
+            print(f"❌ {message}")
 
     def on_server_error_callback(self, error_msg):
         """Callback chamado quando há erro na thread do servidor"""
@@ -986,83 +948,167 @@ class ModbusEmulator(QMainWindow):
         if not self.server_running:
             return
         
-        print("🛑 Parando servidor...")
+        from datetime import datetime
+        import serial
+        
+        print("\n" + "="*80)
+        print(f"🛑 PARANDO SERVIDOR - {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
+        print("="*80)
         
         try:
-            # 1. FECHAR PORTA SERIAL DIRETAMENTE (força bruta!)
-            if hasattr(self, 'serial_port') and self.serial_port:
-                try:
-                    if hasattr(self.serial_port, 'is_open') and self.serial_port.is_open:
-                        self.serial_port.close()
-                        print("🔨 Porta serial fechada na força!")
-                except Exception as e:
-                    print(f"⚠️ Erro ao fechar porta: {e}")
+            print("🛑 Chamando modbus.stop()...")
+            self.modbus.stop()
+            print("✅ modbus.stop() concluído")
             
-            # 2. Parar loop asyncio
-            if hasattr(self, 'server_loop') and self.server_loop:
-                try:
-                    if self.server_loop.is_running():
-                        self.server_loop.call_soon_threadsafe(self.server_loop.stop)
-                        print("⏸️ Loop asyncio parado")
-                except Exception as e:
-                    print(f"⚠️ Erro ao parar loop: {e}")
+            # Parar polling
+            if self.polling_timer.isActive():
+                self.polling_timer.stop()
+                print("⏸️ Polling parado")
             
-            # 3. Aguardar thread encerrar (aumentado timeout)
-            if self.server_thread and self.server_thread.is_alive():
-                self.server_thread.join(timeout=3)
-                if self.server_thread.is_alive():
-                    print("⚠️ Thread ainda viva após 3s!")
-                else:
-                    print("🧵 Thread encerrada")
+            self.server_running = False
+            self.port_combo.setEnabled(True)
+            self.baudrate_combo.setEnabled(True)
+            self.bytesize_combo.setEnabled(True)
+            self.parity_combo.setEnabled(True)
+            self.stopbits_combo.setEnabled(True)
+            self.slave_id_entry.setEnabled(True)
+            self.btn_toggle.setText("Iniciar Servidor")
+            self.btn_toggle.setEnabled(False)  # Desabilitar até porta liberar
             
-            # 4. Fechar servidor Modbus
-            if hasattr(self, 'server') and self.server:
-                try:
-                    self.server.server_close()
-                    print("📡 Servidor Modbus fechado")
-                except Exception as e:
-                    print(f"⚠️ Erro ao fechar servidor: {e}")
+            # Iniciar monitoramento de porta
+            port = self.port_combo.currentText()
+            baudrate = int(self.baudrate_combo.currentText())
             
-            # 5. Limpar referências
-            self.server = None
-            self.server_thread = None
-            self.server_loop = None
-            self.serial_port = None
+            self.port_check_count = 0
+            self.port_check_start = datetime.now()
+            self.port_check_port = port
+            self.port_check_baudrate = baudrate
+            
+            self.status_label.setText("⏳ Aguardando porta liberar...")
+            self.status_label.setStyleSheet("color: orange; font-weight: bold;")
+            
+            print("\n🔍 Iniciando monitoramento de porta (timeout: 2min)...")
+            print(f"🔍 Testando {port} a cada 1 segundo\n")
+            
+            # Timer para verificar porta a cada 1 segundo
+            self.port_check_timer = QTimer()
+            self.port_check_timer.timeout.connect(self.check_port_released)
+            self.port_check_timer.start(1000)  # 1 segundo
             
         except Exception as e:
-            print(f"⚠️ Erro ao parar servidor: {e}")
-
-        self.server_running = False
-        self.port_combo.setEnabled(True)
-        self.baudrate_combo.setEnabled(True)
-        self.bytesize_combo.setEnabled(True)
-        self.parity_combo.setEnabled(True)
-        self.stopbits_combo.setEnabled(True)
-        self.slave_id_entry.setEnabled(True)
-        self.status_label.setText("⚪ Parado")
-        self.status_label.setStyleSheet("color: gray; font-weight: bold;")
-        self.btn_toggle.setText("Iniciar Servidor")
-        
-        # DESABILITAR BOTÃO POR 8 SEGUNDOS (Windows + pymodbus precisam liberar)
-        self.btn_toggle.setEnabled(False)
-        self.status_label.setText("⏳ Aguardando liberar porta...")
-        self.status_label.setStyleSheet("color: orange; font-weight: bold;")
-        print("⏳ Aguardando 8s para Windows liberar porta...")
-        
-        # Reabilitar botão após 8 segundos
-        QTimer.singleShot(8000, self.enable_start_button)
+            print(f"❌ Erro ao parar servidor: {e}")
+            self.server_running = False
+            self.btn_toggle.setEnabled(True)
     
-    def enable_start_button(self):
-        """Reabilita botão após Windows liberar porta"""
-        # Forçar garbage collection para liberar recursos
-        import gc
-        gc.collect()
+    def check_port_released(self):
+        """Verifica se porta foi liberada"""
+        from datetime import datetime
+        import serial
         
-        self.btn_toggle.setEnabled(True)
-        self.status_label.setText("⚪ Parado")
-        self.status_label.setStyleSheet("color: gray; font-weight: bold;")
-        print("✅ Porta liberada - pode iniciar novamente")
-        print("⏹ Servidor parado")
+        self.port_check_count += 1
+        elapsed = (datetime.now() - self.port_check_start).total_seconds()
+        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        
+        # Timeout de 2 minutos (120 segundos)
+        if elapsed > 120:
+            self.port_check_timer.stop()
+            print(f"\n[{timestamp}] +{elapsed:6.2f}s | ⏱️ TIMEOUT (2 minutos)")
+            print("\n" + "="*80)
+            print("❌ PORTA NÃO LIBEROU EM 2 MINUTOS - Forçando habilitação do botão")
+            print("="*80 + "\n")
+            
+            self.btn_toggle.setEnabled(True)
+            self.status_label.setText("❌ Porta travada - Tente novamente")
+            self.status_label.setStyleSheet("color: red; font-weight: bold;")
+            return
+        
+        # Tentar abrir porta
+        try:
+            test_serial = serial.Serial(
+                port=self.port_check_port,
+                baudrate=self.port_check_baudrate,
+                timeout=0.1
+            )
+            test_serial.close()
+            
+            # SUCESSO! Porta está livre
+            self.port_check_timer.stop()
+            print(f"[{timestamp}] +{elapsed:6.2f}s | ✅ PORTA LIVRE!")
+            print("\n" + "="*80)
+            print(f"✅ PORTA LIBERADA EM {elapsed:.2f}s - Botão habilitado")
+            print("="*80 + "\n")
+            
+            self.btn_toggle.setEnabled(True)
+            self.status_label.setText("⚪ Parado")
+            self.status_label.setStyleSheet("color: gray; font-weight: bold;")
+            
+        except (OSError, serial.SerialException) as e:
+            # Porta ainda em uso
+            print(f"[{timestamp}] +{elapsed:6.2f}s | ❌ EM USO (tentativa {self.port_check_count})")
+    
+
+    
+    def poll_shared_memory(self):
+        """Faz polling de shared memory para atualizar UI (multiprocessing)"""
+        if not self.server_running or not self.modbus:
+            return
+        
+        try:
+            # Verificar coils - ler do endereço offset+1
+            for addr in self.coils_map.keys():
+                val = self.modbus.get_value(1, addr + 1)
+                if val is not None and val != self.last_values['coils'].get(addr):
+                    old_val = self.last_values['coils'].get(addr, 'N/A')
+                    self.last_values['coils'][addr] = val
+                    
+                    # Debug: mostrar mudança
+                    reg_name = self.coils_map[addr]['nome']
+                    pass # print(f"🔄 [COIL] Base0={addr} | {reg_name[:30]:30s} | Tela: {old_val} → Modbus: {val}")
+                    
+                    self.on_coil_changed(addr, bool(val))
+            
+            # Verificar discrete inputs - ler do endereço offset+1
+            for addr in self.di_map.keys():
+                val = self.modbus.get_value(2, addr + 1)
+                if val is not None and val != self.last_values['di'].get(addr):
+                    old_val = self.last_values['di'].get(addr, 'N/A')
+                    self.last_values['di'][addr] = val
+                    
+                    # Debug: mostrar mudança
+                    reg_name = self.di_map[addr]['nome']
+                    pass # print(f"🔄 [DI]   Base0={addr} | {reg_name[:30]:30s} | Tela: {old_val} → Modbus: {val}")
+                    
+                    self.on_di_changed(addr, bool(val))
+            
+            # Verificar input registers - ler do endereço offset+1
+            for addr in self.ir_map.keys():
+                val = self.modbus.get_value(4, addr + 1)
+                if val is not None and val != self.last_values['ir'].get(addr):
+                    old_val = self.last_values['ir'].get(addr, 'N/A')
+                    self.last_values['ir'][addr] = val
+                    
+                    # Debug: mostrar mudança
+                    reg_name = self.ir_map[addr]['nome']
+                    unidade = self.ir_map[addr]['unidade']
+                    pass # print(f"🔄 [IR]   Base0={addr} | {reg_name[:30]:30s} | Tela: {old_val} → Modbus: {val} {unidade}")
+                    
+                    self.on_ir_changed(addr, int(val))
+            
+            # Verificar holding registers - ler do endereço offset+1
+            for addr in self.hr_map.keys():
+                val = self.modbus.get_value(3, addr + 1)
+                if val is not None and val != self.last_values['hr'].get(addr):
+                    old_val = self.last_values['hr'].get(addr, 'N/A')
+                    self.last_values['hr'][addr] = val
+                    
+                    # Debug: mostrar mudança
+                    reg_name = self.hr_map[addr]['nome']
+                    unidade = self.hr_map[addr]['unidade']
+                    pass # print(f"🔄 [HR]   Base0={addr} | {reg_name[:30]:30s} | Tela: {old_val} → Modbus: {val} {unidade}")
+                    
+                    self.on_hr_changed(addr, int(val))
+        except Exception as e:
+            pass  # Ignorar erros de polling
     
     def closeEvent(self, event):
         try:

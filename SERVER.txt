@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+TPS48 Control Center - Interface Unificada
+"""
+
+import tkinter as tk
+from tkinter import ttk, messagebox
+import serial.tools.list_ports
+import time
+import threading
+import random
+import requests
+from datetime import datetime
+from pymodbus.server import StartSerialServer
+from pymodbus.datastore import ModbusServerContext, ModbusSlaveContext, ModbusSequentialDataBlock
+from pymodbus.framer.rtu_framer import ModbusRtuFramer
+
+class TPS48DataBlock(ModbusSequentialDataBlock):
+    def __init__(self, address, values):
+        super().__init__(address, values)
+        self.base_values = {
+            0: 48000, 1: 500, 2: 100, 3: 105, 4: 250, 5: 252, 6: 248, 7: 251, 8: 4500,
+            10: 2200, 11: 2210, 12: 2190, 96: 6,
+            97: 480, 98: 481, 99: 479, 100: 482, 101: 478, 102: 480,
+            117: 80, 118: 82, 119: 78, 120: 85, 121: 75, 122: 81, 143: 0
+        }
+        self.variations = {
+            0: 500, 1: 30, 2: 10, 3: 10, 4: 5, 5: 5, 6: 5, 7: 5, 8: 200,
+            10: 50, 11: 50, 12: 50, 97: 10, 98: 10, 99: 10, 100: 10, 101: 10, 102: 10,
+            117: 5, 118: 5, 119: 5, 120: 5, 121: 5, 122: 5
+        }
+        for addr, value in self.base_values.items():
+            self.values[addr] = value
+    
+    def update_values(self):
+        for addr, base_value in self.base_values.items():
+            variation = self.variations.get(addr, 0)
+            if variation > 0:
+                new_value = base_value + random.randint(-variation, variation)
+                self.values[addr] = max(0, new_value)
+
+class TPS48ControlCenter:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("TPS48 Control Center")
+        self.root.geometry("550x300")
+        self.root.resizable(True, True)
+        
+        # Variáveis do simulador Modbus RTU
+        self.modbus_server = None
+        self.modbus_running = False
+        self.data_block = None
+        self.update_thread = None
+        self.server_thread = None
+        
+        # Variáveis HTTP
+        self.http_session = None
+        self.http_running = False
+        self.http_thread = None
+        
+        # Events para controle de timing
+        self.modbus_stop_event = threading.Event()
+        self.http_stop_event = threading.Event()
+        self.clock_stop_event = threading.Event()
+        
+        self.setup_ui()
+        self.start_system_clock()
+        
+    def setup_ui(self):
+        """Configura a interface do usuário"""
+        # Frame principal
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Configurar grid weights
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        
+        # Frame superior esquerdo para controles de porta
+        port_frame = ttk.Frame(main_frame)
+        port_frame.grid(row=0, column=0, sticky=(tk.W, tk.N), padx=5, pady=5)
+        
+        # Label PORTA COM
+        ttk.Label(port_frame, text="PORTA COM:").grid(row=0, column=0, padx=(0, 5))
+        
+        # Dropdown de portas
+        self.port_var = tk.StringVar()
+        self.port_combo = ttk.Combobox(port_frame, textvariable=self.port_var, width=10, state="readonly")
+        self.port_combo.grid(row=0, column=1, padx=(0, 5))
+        
+        # Botão Atualizar Portas
+        ttk.Button(port_frame, text="ATUALIZAR PORTAS", command=self.update_ports).grid(row=0, column=2, padx=(0, 5))
+        
+        # Botão Conectar/Desconectar
+        self.connect_btn = ttk.Button(port_frame, text="CONECTAR", command=self.toggle_connection)
+        self.connect_btn.grid(row=0, column=3)
+        
+        # Botão HTTP
+        self.http_btn = ttk.Button(port_frame, text="INICIAR HTTP", command=self.toggle_http)
+        self.http_btn.grid(row=0, column=4, padx=(10, 0))
+        
+        # Atualiza portas na inicialização
+        self.update_ports()
+        
+        # Seção de dados HTTP
+        self.setup_http_data_section(main_frame)
+    
+    def get_available_ports(self):
+        """Retorna lista de portas seriais disponíveis"""
+        try:
+            ports = serial.tools.list_ports.comports()
+            return [port.device for port in ports]
+        except:
+            return []
+    
+    def update_ports(self):
+        """Atualiza lista de portas disponíveis"""
+        ports = self.get_available_ports()
+        self.port_combo['values'] = ports
+        if ports and not self.port_var.get():
+            self.port_combo.set(ports[0])
+    
+    def toggle_connection(self):
+        """Inicia ou para a simulação TPS48"""
+        if self.modbus_running:
+            self.stop_simulation()
+        else:
+            self.start_simulation()
+    
+    def start_simulation(self):
+        """Inicia a simulação TPS48"""
+        selected_port = self.port_var.get()
+        if not selected_port:
+            messagebox.showerror("Erro", "Selecione uma porta COM")
+            return
+        
+        try:
+            # Cria os blocos de dados
+            holding_data = [0] * 400
+            discrete_data = [0] * 400
+            coil_data = [0] * 400
+            
+            self.data_block = TPS48DataBlock(0, holding_data)
+            
+            store = ModbusSlaveContext(
+                di=ModbusSequentialDataBlock(0, discrete_data),
+                co=ModbusSequentialDataBlock(0, coil_data),
+                hr=self.data_block,
+                ir=self.data_block,
+                zero_mode=True
+            )
+            
+            context = ModbusServerContext(slaves={1: store}, single=False)
+            
+            # Inicia servidor em thread separada
+            def run_server():
+                try:
+                    StartSerialServer(
+                        context=context,
+                        framer=ModbusRtuFramer,
+                        port=selected_port,
+                        baudrate=9600,
+                        bytesize=8,
+                        parity='N',
+                        stopbits=1,
+                        timeout=1
+                    )
+                except:
+                    pass
+            
+            self.server_thread = threading.Thread(target=run_server, daemon=True)
+            self.server_thread.start()
+            self.modbus_server = True  # Flag indicando servidor ativo
+            
+            # Inicia thread de atualização de dados
+            self.modbus_running = True
+            self.modbus_stop_event.clear()
+            self.update_thread = threading.Thread(target=self.update_data_loop, daemon=True)
+            self.update_thread.start()
+            
+            self.connect_btn.config(text="DESCONECTAR")
+            self.port_combo.config(state="disabled")
+            
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao iniciar simulação: {str(e)}")
+    
+    def stop_simulation(self):
+        """Para a simulação TPS48"""
+        self.modbus_running = False
+        self.modbus_stop_event.set()
+        
+        # Marca servidor como inativo (thread daemon será parada ao fechar programa)
+        self.modbus_server = None
+        
+        self.connect_btn.config(text="CONECTAR")
+        self.port_combo.config(state="readonly")
+    
+    def update_data_loop(self):
+        """Loop de atualização dos dados simulados"""
+        while self.modbus_running:
+            if self.data_block:
+                self.data_block.update_values()
+            if self.modbus_stop_event.wait(0.5):  # Interruptível
+                break
+    
+    def setup_http_data_section(self, parent):
+        """Configura a seção de dados HTTP"""
+        # Frame para dados HTTP
+        http_frame = ttk.LabelFrame(parent, text="DADOS HTTP TPS48", padding="10")
+        http_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=10)
+        
+        # Grid de dados em 2 colunas
+        # Coluna 1 - Tensões
+        tensions_frame = ttk.LabelFrame(http_frame, text="TENSÕES", padding="5")
+        tensions_frame.grid(row=0, column=0, padx=(0, 10), sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        ttk.Label(tensions_frame, text="Linha A:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.line_a_var = tk.StringVar(value="--- V")
+        ttk.Label(tensions_frame, textvariable=self.line_a_var, font=("Arial", 10, "bold")).grid(row=0, column=1, sticky=tk.E, pady=2)
+        
+        ttk.Label(tensions_frame, text="Linha B:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.line_b_var = tk.StringVar(value="--- V")
+        ttk.Label(tensions_frame, textvariable=self.line_b_var, font=("Arial", 10, "bold")).grid(row=1, column=1, sticky=tk.E, pady=2)
+        
+        ttk.Label(tensions_frame, text="Linha C:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        self.line_c_var = tk.StringVar(value="--- V")
+        ttk.Label(tensions_frame, textvariable=self.line_c_var, font=("Arial", 10, "bold")).grid(row=2, column=1, sticky=tk.E, pady=2)
+        
+        ttk.Label(tensions_frame, text="Sistema:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        self.system_voltage_var = tk.StringVar(value="--- V")
+        ttk.Label(tensions_frame, textvariable=self.system_voltage_var, font=("Arial", 10, "bold")).grid(row=3, column=1, sticky=tk.E, pady=2)
+        
+        # Coluna 2 - Correntes
+        currents_frame = ttk.LabelFrame(http_frame, text="CORRENTES", padding="5")
+        currents_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        ttk.Label(currents_frame, text="Sistema:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.system_current_var = tk.StringVar(value="--- A")
+        ttk.Label(currents_frame, textvariable=self.system_current_var, font=("Arial", 10, "bold")).grid(row=0, column=1, sticky=tk.E, pady=2)
+        
+        ttk.Label(currents_frame, text="Bateria 1:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.battery_current_var = tk.StringVar(value="--- A")
+        ttk.Label(currents_frame, textvariable=self.battery_current_var, font=("Arial", 10, "bold")).grid(row=1, column=1, sticky=tk.E, pady=2)
+        
+        # Status da conexão HTTP
+        status_frame = ttk.Frame(http_frame)
+        status_frame.grid(row=1, column=0, columnspan=2, pady=(10, 0))
+        
+        ttk.Label(status_frame, text="Status HTTP:").grid(row=0, column=0, padx=(0, 5))
+        self.http_status_var = tk.StringVar(value="Desconectado")
+        self.http_status_label = ttk.Label(status_frame, textvariable=self.http_status_var, font=("Arial", 9, "bold"))
+        self.http_status_label.grid(row=0, column=1)
+        
+        ttk.Label(status_frame, text="Data/Hora do sistema:").grid(row=0, column=2, padx=(20, 5))
+        self.system_datetime_var = tk.StringVar(value="--:--:--")
+        ttk.Label(status_frame, textvariable=self.system_datetime_var, font=("Arial", 9)).grid(row=0, column=3)
+        
+        # Segunda linha do status - Data/Hora do dispositivo
+        ttk.Label(status_frame, text="Data/Hora do dispositivo:").grid(row=1, column=0, padx=(0, 5), sticky=tk.W)
+        self.device_datetime_var = tk.StringVar(value="---")
+        ttk.Label(status_frame, textvariable=self.device_datetime_var, font=("Arial", 9)).grid(row=1, column=1, columnspan=3, sticky=tk.W)
+    
+    def toggle_http(self):
+        """Inicia ou para a coleta HTTP"""
+        if self.http_running:
+            self.stop_http()
+        else:
+            self.start_http()
+    
+    def start_http(self):
+        """Inicia a coleta HTTP"""
+        try:
+            self.http_running = True
+            self.http_stop_event.clear()
+            self.http_thread = threading.Thread(target=self.http_loop, daemon=True)
+            self.http_thread.start()
+            
+            self.http_btn.config(text="PARAR HTTP")
+            self.http_status_var.set("Conectando...")
+            self.http_status_label.config(foreground="orange")
+            
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao iniciar HTTP: {str(e)}")
+    
+    def stop_http(self):
+        """Para a coleta HTTP"""
+        self.http_running = False
+        self.http_stop_event.set()
+        self.http_btn.config(text="INICIAR HTTP")
+        self.http_status_var.set("Desconectado")
+        self.http_status_label.config(foreground="red")
+        
+        # Reset dos valores para mostrar desconexão
+        self.line_a_var.set("--- V")
+        self.line_b_var.set("--- V")
+        self.line_c_var.set("--- V")
+        self.system_voltage_var.set("--- V")
+        self.system_current_var.set("--- A")
+        self.battery_current_var.set("--- A")
+        # Data/hora do sistema continua rodando independentemente
+        self.device_datetime_var.set("---")
+        
+        if self.http_session:
+            self.http_session.close()
+            self.http_session = None
+    
+    def http_login(self):
+        """Realiza login HTTP"""
+        self.http_session = requests.Session()
+        login_data = {
+            "validateUser": "",
+            "USER_NAME": "admin",
+            "USER_PASS": "admin"
+        }
+        
+        try:
+            response = self.http_session.post("http://192.168.1.100/phpInterface.php", data=login_data, timeout=2)
+            return response.status_code == 200 and "ok" in response.text.lower()
+        except:
+            return False
+    
+    def get_http_measurements(self):
+        """Obtém medições via HTTP"""
+        if not self.http_session:
+            return None
+            
+        params = {"getMeassure[]": [
+            "psInputLineAVoltage",
+            "psInputLineBVoltage", 
+            "psInputLineCVoltage",
+            "systemVoltage",
+            "systemCurrent",
+            "psBatteryCurrent1"
+        ]}
+        
+        try:
+            response = self.http_session.post("http://192.168.1.100/phpInterface.php", data=params, timeout=2)
+            if response.status_code == 200 and response.text.strip():
+                return response.json()
+        except:
+            pass
+        return None
+    
+    def get_device_datetime(self):
+        """Obtém data/hora do dispositivo TPS48"""
+        if not self.http_session:
+            return None
+            
+        params = {"getTimeDate": "+"}
+        
+        try:
+            response = self.http_session.post("http://192.168.1.100/phpInterface.php", data=params, timeout=2)
+            if response.status_code == 200 and response.text.strip():
+                return response.text.strip()
+        except:
+            pass
+        return None
+    
+    def http_loop(self):
+        """Loop principal da coleta HTTP"""
+        consecutive_failures = 0
+        
+        while self.http_running:
+            try:
+                # Login se necessário
+                if not self.http_session:
+                    if self.http_login():
+                        consecutive_failures = 0
+                        self.root.after(0, lambda: self.http_status_var.set("Conectado"))
+                        self.root.after(0, lambda: self.http_status_label.config(foreground="green"))
+                    else:
+                        consecutive_failures += 1
+                        self.root.after(0, lambda: self.http_status_var.set("Erro de login"))
+                        self.root.after(0, lambda: self.http_status_label.config(foreground="red"))
+                        if self.http_stop_event.wait(5):  # Interruptível
+                            break
+                        continue
+                
+                # Coleta dados
+                measurements = self.get_http_measurements()
+                device_datetime = self.get_device_datetime()
+                
+                if measurements and len(measurements) >= 6:
+                    self.root.after(0, lambda: self.update_http_display(measurements, device_datetime))
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        self.http_session = None
+                
+                if self.http_stop_event.wait(2):  # Interruptível
+                    break
+                
+            except Exception as e:
+                consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    self.http_session = None
+                if self.http_stop_event.wait(2):  # Interruptível
+                    break
+    
+    def update_http_display(self, data, device_datetime=None):
+        """Atualiza os campos de exibição HTTP"""
+        if data and len(data) >= 6:
+            self.line_a_var.set(f"{data[0]} V")
+            self.line_b_var.set(f"{data[1]} V")
+            self.line_c_var.set(f"{data[2]} V")
+            self.system_voltage_var.set(f"{data[3]} V")
+            self.system_current_var.set(f"{data[4]} A")
+            self.battery_current_var.set(f"{data[5]} A")
+            # Data/hora do sistema é atualizada independentemente
+            self.device_datetime_var.set(device_datetime if device_datetime else "---")
+            self.http_status_var.set("Conectado")
+            self.http_status_label.config(foreground="green")
+        else:
+            self.http_status_var.set("Erro nos dados")
+            self.http_status_label.config(foreground="red")
+    
+    def start_system_clock(self):
+        """Inicia relógio do sistema independente"""
+        def update_clock():
+            while not self.clock_stop_event.is_set():
+                current_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                self.root.after(0, lambda: self.system_datetime_var.set(current_time))
+                if self.clock_stop_event.wait(1):
+                    break
+        
+        clock_thread = threading.Thread(target=update_clock, daemon=True)
+        clock_thread.start()
+    
+    def run(self):
+        """Executa a aplicação"""
+        try:
+            self.root.mainloop()
+        finally:
+            # Garante que tudo seja parado ao sair
+            self.modbus_running = False
+            self.http_running = False
+            self.clock_stop_event.set()
+            
+            # Thread daemon será parada automaticamente
+            
+            if self.http_session:
+                self.http_session.close()
+
+if __name__ == "__main__":
+    app = TPS48ControlCenter()
+    app.run()

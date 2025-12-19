@@ -2,12 +2,11 @@
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                               QLabel, QPushButton, QComboBox, QLineEdit, QTabWidget, 
                               QScrollArea, QCheckBox, QGroupBox, QFileDialog, QMessageBox, QGridLayout)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
-from pymodbus.server.async_io import ModbusSerialServer, StartSerialServer
+from pymodbus.server.async_io import StartSerialServer
 from pymodbus.datastore import ModbusSlaveContext, ModbusServerContext, ModbusSequentialDataBlock
-from pymodbus.framer.rtu_framer import ModbusRtuFramer
-import asyncio
+from pymodbus.transaction import ModbusRtuFramer
 from csv_parser import MemoryMapParser
 import serial.tools.list_ports
 import time
@@ -15,30 +14,11 @@ import os
 import sys
 import threading
 import traceback
-
-class EventDrivenDataBlock(ModbusSequentialDataBlock):
-    """DataBlock com callbacks para notificação imediata de mudanças"""
-    def __init__(self, address, values, callback=None):
-        super().__init__(address, values)
-        self.callback = callback
-        self.base_address = address
-    
-    def setValues(self, address, values):
-        super().setValues(address, values)
-        if self.callback:
-            # Notificar mudança imediatamente
-            # address já é o endereço Modbus correto
-            for i, value in enumerate(values):
-                try:
-                    self.callback(address + i, value)
-                except Exception as e:
-                    print(f"⚠️ Erro no callback addr={address+i}: {e}")
+import asyncio
 
 class MonitorThread(QThread):
     update_coil = pyqtSignal(int, bool)
-    update_di = pyqtSignal(int, bool)
-    update_ir = pyqtSignal(int, int)
-    update_hr = pyqtSignal(int, int)
+    update_hr = pyqtSignal(int, str)
     
     def __init__(self, emulator):
         super().__init__()
@@ -46,9 +26,34 @@ class MonitorThread(QThread):
         self.running = True
     
     def run(self):
-        # Thread apenas para manter compatibilidade, eventos são tratados via callback
         while self.running:
-            time.sleep(1)  # Apenas mantém thread viva
+            time.sleep(0.2)
+            if not self.emulator.store:
+                continue
+            
+            try:
+                # Criar cópias dos dicionários para evitar "dictionary changed size during iteration"
+                coil_addrs = list(self.emulator.coil_controls.keys())
+                for addr in coil_addrs:
+                    if not self.running:
+                        break
+                    try:
+                        value = self.emulator.store.getValues(1, addr, 1)[0]
+                        self.update_coil.emit(addr, bool(value))
+                    except Exception:
+                        pass
+
+                hr_addrs = list(self.emulator.hr_controls.keys())
+                for addr in hr_addrs:
+                    if not self.running:
+                        break
+                    try:
+                        value = self.emulator.store.getValues(3, addr, 1)[0]
+                        self.update_hr.emit(addr, str(value))
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"⚠️ Erro na MonitorThread: {e}")
 
     def stop(self):
         self.running = False
@@ -77,7 +82,6 @@ class ModbusEmulator(QMainWindow):
         self.hr_controls = {}
         
         self.server_thread = None
-        self.serial_port = None  # Guardar referência da porta serial
         self.parity_map = {"None": "N", "Even": "E", "Odd": "O", "Mark": "M", "Space": "S"}
         
         # Conectar signal de erro
@@ -315,28 +319,29 @@ class ModbusEmulator(QMainWindow):
             max_ir = max(self.ir_map.keys()) if self.ir_map else 0
             max_hr = max(self.hr_map.keys()) if self.hr_map else 0
             
-            # Criar arrays com tamanho suficiente
-            coils_block = [0] * max(max_coil + 100, 1000)
-            di_block = [0] * max(max_di + 100, 10000)
-            ir_block = [0] * max(max_ir + 100, 10000)
-            hr_block = [0] * max(max_hr + 100, 10000)
+            # ModbusSequentialDataBlock usa indexação base-1 internamente
+            # Precisamos adicionar um elemento dummy no índice 0
+            coils_block = [0] * (max(max_coil + 100, 1000) + 1)
+            di_block = [0] * (max(max_di + 100, 10000) + 1)
+            ir_block = [0] * (max(max_ir + 100, 10000) + 1)
+            hr_block = [0] * (max(max_hr + 100, 10000) + 1)
             
-            # Preencher valores diretamente no índice correspondente
+            # Preencher valores (índice do array = endereço Modbus + 1)
+            # ModbusSequentialDataBlock ignora o índice 0, então deslocamos +1
             for addr, reg in self.coils_map.items():
-                coils_block[addr] = reg['valor_inicial']
+                coils_block[addr + 1] = reg['valor_inicial']
             for addr, reg in self.di_map.items():
-                di_block[addr] = reg['valor_inicial']
+                di_block[addr + 1] = reg['valor_inicial']
             for addr, reg in self.ir_map.items():
-                ir_block[addr] = reg['valor_inicial']
+                ir_block[addr + 1] = reg['valor_inicial']
             for addr, reg in self.hr_map.items():
-                hr_block[addr] = reg['valor_inicial']
+                hr_block[addr + 1] = reg['valor_inicial']
             
-            # Criar DataBlocks com callbacks para event-driven updates
             self.store = ModbusSlaveContext(
-                co=EventDrivenDataBlock(0, coils_block, lambda addr, val: self.on_coil_changed_callback(addr, val)),
-                di=EventDrivenDataBlock(0, di_block, lambda addr, val: self.on_di_changed_callback(addr, val)),
-                ir=EventDrivenDataBlock(0, ir_block, lambda addr, val: self.on_ir_changed_callback(addr, val)),
-                hr=EventDrivenDataBlock(0, hr_block, lambda addr, val: self.on_hr_changed_callback(addr, val))
+                co=ModbusSequentialDataBlock(0, coils_block),
+                di=ModbusSequentialDataBlock(0, di_block),
+                ir=ModbusSequentialDataBlock(0, ir_block),
+                hr=ModbusSequentialDataBlock(0, hr_block)
             )
             
             # DEBUG: Verificar valores no store após criação
@@ -347,7 +352,7 @@ class ModbusEmulator(QMainWindow):
                 csv_val = self.coils_map[addr]['valor_inicial']
                 store_val = self.store.getValues(1, addr, 1)[0]
                 match = "✅" if (array_val == csv_val == store_val) else "❌"
-                print(f"{match} Coil {addr}: CSV={csv_val} | Array[{addr}]={array_val} | Store={store_val}")
+                print(f"{match} Coil {addr}: CSV={csv_val} | Array={array_val} | Store={store_val}")
             print("="*60 + "\n")
             
             # Contexto será recriado no start_server com Slave ID correto
@@ -359,8 +364,6 @@ class ModbusEmulator(QMainWindow):
             if not hasattr(self, 'monitor_thread') or not self.monitor_thread.isRunning():
                 self.monitor_thread = MonitorThread(self)
                 self.monitor_thread.update_coil.connect(self.on_coil_changed)
-                self.monitor_thread.update_di.connect(self.on_di_changed)
-                self.monitor_thread.update_ir.connect(self.on_ir_changed)
                 self.monitor_thread.update_hr.connect(self.on_hr_changed)
                 self.monitor_thread.start()
             
@@ -747,31 +750,6 @@ class ModbusEmulator(QMainWindow):
         except:
             pass
     
-    def on_coil_changed_callback(self, addr, value):
-        """Callback chamado imediatamente quando coil muda (event-driven)"""
-        # ModbusSequentialDataBlock adiciona +1 internamente, compensar
-        real_addr = addr - 1
-        if hasattr(self, 'monitor_thread'):
-            self.monitor_thread.update_coil.emit(real_addr, bool(value))
-    
-    def on_di_changed_callback(self, addr, value):
-        """Callback chamado imediatamente quando discrete input muda"""
-        real_addr = addr - 1
-        if hasattr(self, 'monitor_thread'):
-            self.monitor_thread.update_di.emit(real_addr, bool(value))
-    
-    def on_ir_changed_callback(self, addr, value):
-        """Callback chamado imediatamente quando input register muda"""
-        real_addr = addr - 1
-        if hasattr(self, 'monitor_thread'):
-            self.monitor_thread.update_ir.emit(real_addr, int(value))
-    
-    def on_hr_changed_callback(self, addr, value):
-        """Callback chamado imediatamente quando holding register muda"""
-        real_addr = addr - 1
-        if hasattr(self, 'monitor_thread'):
-            self.monitor_thread.update_hr.emit(real_addr, int(value))
-    
     def on_coil_changed(self, addr, value):
         if addr in self.coil_controls:
             btn = self.coil_controls[addr]
@@ -785,33 +763,12 @@ class ModbusEmulator(QMainWindow):
                 btn.setStyleSheet("background-color: #95a5a6; color: white;")
             btn.blockSignals(False)
     
-    def on_di_changed(self, addr, value):
-        if addr in self.di_controls:
-            btn = self.di_controls[addr]
-            btn.blockSignals(True)
-            btn.setChecked(value)
-            if value:
-                btn.setText("ON")
-                btn.setStyleSheet("background-color: #27ae60; color: white;")
-            else:
-                btn.setText("OFF")
-                btn.setStyleSheet("background-color: #95a5a6; color: white;")
-            btn.blockSignals(False)
-    
-    def on_ir_changed(self, addr, value):
-        if addr in self.ir_controls:
-            entry = self.ir_controls[addr]
-            if not entry.hasFocus():
-                entry.blockSignals(True)
-                entry.setText(str(value))
-                entry.blockSignals(False)
-    
     def on_hr_changed(self, addr, value):
         if addr in self.hr_controls:
             entry = self.hr_controls[addr]
             if not entry.hasFocus():
                 entry.blockSignals(True)
-                entry.setText(str(value))
+                entry.setText(value)
                 entry.blockSignals(False)
     
     def toggle_server(self):
@@ -848,43 +805,6 @@ class ModbusEmulator(QMainWindow):
             QMessageBox.critical(self, "Erro", f"Porta {port} não disponível!\n\nPortas: {', '.join(available_ports)}")
             return
         
-        # Testar abertura da porta ANTES de qualquer coisa
-        import serial
-        try:
-            print(f"🔍 Testando porta {port}...")
-            
-            # Tentar abrir/fechar 3 vezes com intervalo (força liberação)
-            for attempt in range(3):
-                try:
-                    test_serial = serial.Serial(
-                        port=port,
-                        baudrate=baudrate,
-                        bytesize=bytesize,
-                        parity=parity,
-                        stopbits=stopbits,
-                        timeout=1
-                    )
-                    test_serial.close()
-                    time.sleep(0.5)
-                    print(f"✅ Porta {port} disponível (tentativa {attempt+1})")
-                    break
-                except serial.SerialException as e:
-                    if attempt < 2:
-                        print(f"⚠️ Tentativa {attempt+1} falhou, aguardando...")
-                        time.sleep(2)
-                    else:
-                        raise
-        except serial.SerialException as se:
-            error_msg = f"Porta {port} ainda está em uso após 3 tentativas.\n\nAguarde mais alguns segundos e tente novamente.\n\nDetalhes: {str(se)}"
-            QMessageBox.critical(self, "Porta Serial em Uso", error_msg)
-            print(f"❌ {error_msg}")
-            return
-        except Exception as pe:
-            error_msg = f"Erro ao acessar porta {port}: {str(pe)}"
-            QMessageBox.critical(self, "Erro de Porta Serial", error_msg)
-            print(f"❌ {error_msg}")
-            return
-        
         try:
             # Criar contexto com Slave ID específico e suporte a broadcast
             self.context = ModbusServerContext(slaves={
@@ -892,13 +812,10 @@ class ModbusEmulator(QMainWindow):
                 0: self.store          # Broadcast (ID 0)
             }, single=False)
             
-            # Criar e iniciar servidor async
-            self.server_ready = threading.Event()
-            
-            async def create_and_run_server():
-                self.server = await StartSerialServer(
-                    context=self.context,
-                    framer=ModbusRtuFramer,
+            # Testar abertura da porta ANTES de criar o servidor
+            import serial
+            try:
+                test_serial = serial.Serial(
                     port=port,
                     baudrate=baudrate,
                     bytesize=bytesize,
@@ -906,40 +823,34 @@ class ModbusEmulator(QMainWindow):
                     stopbits=stopbits,
                     timeout=1
                 )
-                # Guardar referência da porta serial para fechar depois
-                try:
-                    if hasattr(self.server, 'protocol') and hasattr(self.server.protocol, 'transport'):
-                        if hasattr(self.server.protocol.transport, '_serial'):
-                            self.serial_port = self.server.protocol.transport._serial
-                            print(f"🔗 Referência da porta serial capturada")
-                except Exception as e:
-                    print(f"⚠️ Não foi possível capturar porta: {e}")
-                
-                self.server_ready.set()
-                # Manter servidor rodando
-                await asyncio.Event().wait()
+                test_serial.close()
+            except serial.SerialException as se:
+                raise Exception(f"Porta {port} não pode ser aberta: {str(se)}")
+            except Exception as pe:
+                raise Exception(f"Erro ao acessar porta {port}: {str(pe)}")
             
-            def run_async_server():
-                self.server_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(self.server_loop)
+            # Usar StartSerialServer com asyncio em thread separada
+            def run_server():
                 try:
-                    self.server_loop.run_until_complete(create_and_run_server())
-                except asyncio.CancelledError:
-                    pass
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(StartSerialServer(
+                        context=self.context,
+                        framer=ModbusRtuFramer,
+                        port=port,
+                        baudrate=baudrate,
+                        bytesize=bytesize,
+                        parity=parity,
+                        stopbits=stopbits,
+                        timeout=1
+                    ))
                 except Exception as e:
-                    print(f"⚠️ Servidor encerrado: {e}")
-                finally:
-                    self.server_loop.close()
+                    self.server_error.emit(f"Erro no servidor: {str(e)}")
             
-            self.server_thread = threading.Thread(
-                target=run_async_server,
-                daemon=True
-            )
+            self.server_thread = threading.Thread(target=run_server, daemon=True)
             self.server_thread.start()
-            
-            # Aguardar servidor iniciar (não bloqueia se demorar)
-            self.server_ready.wait(timeout=1)
-            
+            self.server = True
+
             self.server_running = True
             self.port_combo.setEnabled(False)
             self.baudrate_combo.setEnabled(False)
@@ -954,24 +865,15 @@ class ModbusEmulator(QMainWindow):
         except Exception as e:
             error_msg = str(e)
             QMessageBox.critical(self, "Erro ao iniciar servidor", f"Falha ao iniciar:\n\n{error_msg}")
-            print(f"❌ Erro ao iniciar servidor: {error_msg}")
-            # Reverter estado
+            print(f"❌ Erro: {error_msg}")
             self.server_running = False
-            self.port_combo.setEnabled(True)
-            self.baudrate_combo.setEnabled(True)
-            self.bytesize_combo.setEnabled(True)
-            self.parity_combo.setEnabled(True)
-            self.stopbits_combo.setEnabled(True)
-            self.slave_id_entry.setEnabled(True)
-            # Limpar recursos
+            # Limpar recursos se houver
             if hasattr(self, 'server') and self.server:
                 try:
                     self.server.server_close()
                 except:
                     pass
-            self.server = None
-            self.server_thread = None
-            self.server_loop = None
+                self.server = None
 
     def on_server_error_callback(self, error_msg):
         """Callback chamado quando há erro na thread do servidor"""
@@ -986,49 +888,10 @@ class ModbusEmulator(QMainWindow):
         if not self.server_running:
             return
         
-        print("🛑 Parando servidor...")
-        
         try:
-            # 1. FECHAR PORTA SERIAL DIRETAMENTE (força bruta!)
-            if hasattr(self, 'serial_port') and self.serial_port:
-                try:
-                    if hasattr(self.serial_port, 'is_open') and self.serial_port.is_open:
-                        self.serial_port.close()
-                        print("🔨 Porta serial fechada na força!")
-                except Exception as e:
-                    print(f"⚠️ Erro ao fechar porta: {e}")
-            
-            # 2. Parar loop asyncio
-            if hasattr(self, 'server_loop') and self.server_loop:
-                try:
-                    if self.server_loop.is_running():
-                        self.server_loop.call_soon_threadsafe(self.server_loop.stop)
-                        print("⏸️ Loop asyncio parado")
-                except Exception as e:
-                    print(f"⚠️ Erro ao parar loop: {e}")
-            
-            # 3. Aguardar thread encerrar (aumentado timeout)
-            if self.server_thread and self.server_thread.is_alive():
-                self.server_thread.join(timeout=3)
-                if self.server_thread.is_alive():
-                    print("⚠️ Thread ainda viva após 3s!")
-                else:
-                    print("🧵 Thread encerrada")
-            
-            # 4. Fechar servidor Modbus
-            if hasattr(self, 'server') and self.server:
-                try:
-                    self.server.server_close()
-                    print("📡 Servidor Modbus fechado")
-                except Exception as e:
-                    print(f"⚠️ Erro ao fechar servidor: {e}")
-            
-            # 5. Limpar referências
+            # Thread daemon será encerrada automaticamente
             self.server = None
             self.server_thread = None
-            self.server_loop = None
-            self.serial_port = None
-            
         except Exception as e:
             print(f"⚠️ Erro ao parar servidor: {e}")
 
@@ -1042,26 +905,6 @@ class ModbusEmulator(QMainWindow):
         self.status_label.setText("⚪ Parado")
         self.status_label.setStyleSheet("color: gray; font-weight: bold;")
         self.btn_toggle.setText("Iniciar Servidor")
-        
-        # DESABILITAR BOTÃO POR 8 SEGUNDOS (Windows + pymodbus precisam liberar)
-        self.btn_toggle.setEnabled(False)
-        self.status_label.setText("⏳ Aguardando liberar porta...")
-        self.status_label.setStyleSheet("color: orange; font-weight: bold;")
-        print("⏳ Aguardando 8s para Windows liberar porta...")
-        
-        # Reabilitar botão após 8 segundos
-        QTimer.singleShot(8000, self.enable_start_button)
-    
-    def enable_start_button(self):
-        """Reabilita botão após Windows liberar porta"""
-        # Forçar garbage collection para liberar recursos
-        import gc
-        gc.collect()
-        
-        self.btn_toggle.setEnabled(True)
-        self.status_label.setText("⚪ Parado")
-        self.status_label.setStyleSheet("color: gray; font-weight: bold;")
-        print("✅ Porta liberada - pode iniciar novamente")
         print("⏹ Servidor parado")
     
     def closeEvent(self, event):

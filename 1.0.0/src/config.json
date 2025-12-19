@@ -1,0 +1,9 @@
+{
+  "last_csv_path": "Z:/111 PUB/01 INTRANET/Marcel Hilleshein/PROJ/SimuladorBMS/Documenta\u00e7\u00e3o/Mapa_de_Memoria_TPS_N.csv",
+  "serial_port": "COM13",
+  "baudrate": 57600,
+  "bytesize": 8,
+  "parity": "None",
+  "stopbits": 1,
+  "slave_id": 30
+}
