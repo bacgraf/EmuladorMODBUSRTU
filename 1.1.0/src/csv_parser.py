@@ -11,8 +11,14 @@ class MemoryMapParser:
         
     def parse(self):
         """Lê o CSV e organiza por função Modbus"""
-        with open(self.csv_path, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
+        with open(self.csv_path, 'r', encoding='utf-8-sig') as f:
+            # Detectar delimitador automaticamente
+            sample = f.read(1024)
+            f.seek(0)
+            sniffer = csv.Sniffer()
+            delimiter = sniffer.sniff(sample).delimiter
+            
+            reader = csv.DictReader(f, delimiter=delimiter)
             
             for row in reader:
                 try:
@@ -24,7 +30,19 @@ class MemoryMapParser:
                     resolucao = row.get('Resolucao', '').strip()
                     permissao = row.get('Permissao', '').strip()
                     fcs = row.get('FCs', '').strip()
+                    
+                    # Suportar ambos os formatos: Intervalo OU Minimo/Maximo
                     intervalo = row.get('Intervalo', '').strip()
+                    if not intervalo:
+                        minimo = row.get('Minimo', '').strip()
+                        maximo = row.get('Maximo', '').strip()
+                        if minimo and maximo:
+                            intervalo = f"{minimo}-{maximo}"
+                        elif minimo:
+                            intervalo = minimo
+                        elif maximo:
+                            intervalo = maximo
+                    
                     valor_inicial = row.get('ValorInicial', '').strip()
                     descricao = row.get('Descricao', '').strip()
                     

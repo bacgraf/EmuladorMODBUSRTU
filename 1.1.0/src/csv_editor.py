@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt, QPoint, pyqtSignal
 from PyQt6.QtGui import QColor, QIntValidator, QDoubleValidator, QIcon, QAction, QShortcut, QKeySequence
 import csv
 import sys
+import os
 
 
 class NoWheelComboBox(QComboBox):
@@ -24,6 +25,7 @@ class CSVEditor(QMainWindow):
         self.csv_path = ""
         self.modified = False
         self.dynamic_mode = True  # True = modo dinâmico, False = modo planilha
+        self.use_minmax_format = False  # True = Minimo/Maximo, False = Intervalo
         
         self.setup_ui()
         self.apply_styles()
@@ -38,6 +40,19 @@ class CSVEditor(QMainWindow):
             'HREG': {'R': '3', 'W': '6/16', 'R/W': '3/6/16'}
         }
         return fc_map.get(tipo, {}).get(permissao, '')
+    
+    def update_table_columns(self):
+        """Atualiza colunas da tabela baseado no formato"""
+        if self.use_minmax_format:
+            self.table.setColumnCount(12)
+            self.table.setHorizontalHeaderLabels(["Tipo", "RegBase0", "RegBase1", "Objeto", "Unidade", "Resolucao", "Permissao", "FCs", "Minimo", "Maximo", "ValorInicial", "Descricao"])
+        else:
+            self.table.setColumnCount(11)
+            self.table.setHorizontalHeaderLabels(["Tipo", "RegBase0", "RegBase1", "Objeto", "Unidade", "Resolucao", "Permissao", "FCs", "Intervalo", "ValorInicial", "Descricao"])
+        
+        self.table.setColumnWidth(0, 100)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(self.table.columnCount()-1, QHeaderView.ResizeMode.Stretch)
     
     def setup_ui(self):
         central = QWidget()
@@ -119,11 +134,7 @@ class CSVEditor(QMainWindow):
         
         # Table
         self.table = QTableWidget()
-        self.table.setColumnCount(11)
-        self.table.setHorizontalHeaderLabels(["Tipo", "RegBase0", "RegBase1", "Objeto", "Unidade", "Resolucao", "Permissao", "FCs", "Intervalo", "ValorInicial", "Descricao"])
-        self.table.setColumnWidth(0, 100)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(10, QHeaderView.ResizeMode.Stretch)
+        self.update_table_columns()  # Configura colunas baseado no formato
         self.table.setAlternatingRowColors(True)
         self.table.itemChanged.connect(self.on_item_changed)
         layout.addWidget(self.table)
@@ -288,6 +299,27 @@ class CSVEditor(QMainWindow):
             self.table.blockSignals(True)
             self.table.setRowCount(0)
             
+            # Detectar formato do CSV (Intervalo vs Minimo/Maximo)
+            with open(filename, 'r', encoding='utf-8-sig') as f:
+                sample = f.read(1024)
+                f.seek(0)
+                sniffer = csv.Sniffer()
+                delimiter = sniffer.sniff(sample).delimiter
+                
+                reader = csv.DictReader(f, delimiter=delimiter)
+                first_row = next(reader, None)
+                f.seek(0)
+                reader = csv.DictReader(f, delimiter=delimiter)
+                
+                # Detectar formato baseado nas colunas
+                if first_row and 'Minimo' in first_row and 'Maximo' in first_row:
+                    self.use_minmax_format = True
+                else:
+                    self.use_minmax_format = False
+            
+            # Atualizar colunas da tabela
+            self.update_table_columns()
+            
             # Ler arquivo em memória com progresso
             import os
             file_size = os.path.getsize(filename)
@@ -304,8 +336,12 @@ class CSVEditor(QMainWindow):
             
             self.progress_bar.setValue(50)
             
-            with open(filename, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
+            with open(filename, 'r', encoding='utf-8-sig') as f:
+                sample = f.read(1024)
+                f.seek(0)
+                sniffer = csv.Sniffer()
+                delimiter = sniffer.sniff(sample).delimiter
+                reader = csv.DictReader(f, delimiter=delimiter)
                 data_rows = list(reader)
             
             self.progress_bar.setValue(100)
@@ -317,8 +353,24 @@ class CSVEditor(QMainWindow):
                 row = self.table.rowCount()
                 self.table.insertRow(row)
                 
-                # Ler todas as 11 colunas
-                cols_data = [
+                # Ler colunas baseado no formato
+                if self.use_minmax_format:
+                    cols_data = [
+                        row_data.get('Tipo', ''),
+                        row_data.get('RegBase0', ''),
+                        row_data.get('RegBase1', ''),
+                        row_data.get('Objeto', ''),
+                        row_data.get('Unidade', ''),
+                        row_data.get('Resolucao', ''),
+                        row_data.get('Permissao', ''),
+                        row_data.get('FCs', ''),
+                        row_data.get('Minimo', ''),
+                        row_data.get('Maximo', ''),
+                        row_data.get('ValorInicial', ''),
+                        row_data.get('Descricao', '')
+                    ]
+                else:
+                    cols_data = [
                         row_data.get('Tipo', ''),
                         row_data.get('RegBase0', ''),
                         row_data.get('RegBase1', ''),
@@ -330,7 +382,7 @@ class CSVEditor(QMainWindow):
                         row_data.get('Intervalo', ''),
                         row_data.get('ValorInicial', ''),
                         row_data.get('Descricao', '')
-                ]
+                    ]
                 
                 # Tipo (ComboBox)
                 combo = NoWheelComboBox()
@@ -354,22 +406,30 @@ class CSVEditor(QMainWindow):
                 perm_combo.currentTextChanged.connect(lambda p, r=row: self.on_permissao_changed(r, p))
                 self.table.setCellWidget(row, 6, perm_combo)
                 
-                # Colunas 7-8 (FCs e Intervalo)
+                # Colunas 7-8 (FCs e Intervalo/Minimo)
                 for col in range(7, 9):
                     self.table.setItem(row, col, QTableWidgetItem(cols_data[col]))
                 
-                # ValorInicial (col 9) - ComboBox para COIL/DISC
+                # Coluna 9 (Maximo se formato MinMax, senão ValorInicial)
+                if self.use_minmax_format:
+                    self.table.setItem(row, 9, QTableWidgetItem(cols_data[9]))  # Maximo
+                    valor_col = 10
+                else:
+                    valor_col = 9
+                
+                # ValorInicial - ComboBox para COIL/DISC
                 if cols_data[0] in ["COIL", "DISC"]:
                     valor_combo = NoWheelComboBox()
                     valor_combo.addItems(["OFF", "ON", ""])
-                    valor_combo.setCurrentText(cols_data[9] if cols_data[9] in ["ON", "OFF", ""] else "OFF")
+                    valor_combo.setCurrentText(cols_data[valor_col] if cols_data[valor_col] in ["ON", "OFF", ""] else "OFF")
                     valor_combo.currentTextChanged.connect(lambda: self.mark_modified())
-                    self.table.setCellWidget(row, 9, valor_combo)
+                    self.table.setCellWidget(row, valor_col, valor_combo)
                 else:
-                    self.table.setItem(row, 9, QTableWidgetItem(cols_data[9]))
+                    self.table.setItem(row, valor_col, QTableWidgetItem(cols_data[valor_col]))
                 
-                # Descricao (col 10)
-                self.table.setItem(row, 10, QTableWidgetItem(cols_data[10]))
+                # Descricao (última coluna)
+                desc_col = 11 if self.use_minmax_format else 10
+                self.table.setItem(row, desc_col, QTableWidgetItem(cols_data[desc_col]))
             
             self.csv_path = filename
             self.modified = False
@@ -397,15 +457,18 @@ class CSVEditor(QMainWindow):
     
     def write_csv(self, filename):
         try:
-            with open(filename, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow(['Tipo', 'RegBase0', 'RegBase1', 'Objeto', 'Unidade', 'Resolucao', 'Permissao', 'FCs', 'Intervalo', 'ValorInicial', 'Descricao'])
+            with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
+                sample = open(filename.replace('.csv', '_temp.csv'), 'w') if os.path.exists(filename) else None
+                
+                writer = csv.writer(f, delimiter=',')
+                
+                # Cabeçalho baseado no formato
+                if self.use_minmax_format:
+                    writer.writerow(['Tipo', 'RegBase0', 'RegBase1', 'Objeto', 'Unidade', 'Resolucao', 'Permissao', 'FCs', 'Minimo', 'Maximo', 'ValorInicial', 'Descricao'])
+                else:
+                    writer.writerow(['Tipo', 'RegBase0', 'RegBase1', 'Objeto', 'Unidade', 'Resolucao', 'Permissao', 'FCs', 'Intervalo', 'ValorInicial', 'Descricao'])
                 
                 for row in range(self.table.rowCount()):
-                    # Salvar TODAS as linhas, independente do filtro
-                    # if self.table.isRowHidden(row):
-                    #     continue
-                    
                     # Tipo
                     combo = self.table.cellWidget(row, 0)
                     tipo = combo.currentText() if combo else ""
@@ -424,21 +487,31 @@ class CSVEditor(QMainWindow):
                         item = self.table.item(row, 6)
                         cols.append(item.text() if item else "")
                     
-                    # Colunas 7-8
+                    # Colunas 7-8 (FCs e Intervalo/Minimo)
                     for col in range(7, 9):
                         item = self.table.item(row, col)
                         cols.append(item.text() if item else "")
                     
-                    # ValorInicial (col 9) - pode ser ComboBox ou QTableWidgetItem
-                    valor_widget = self.table.cellWidget(row, 9)
+                    # Formato MinMax: adicionar coluna Maximo
+                    if self.use_minmax_format:
+                        item = self.table.item(row, 9)
+                        cols.append(item.text() if item else "")
+                        valor_col = 10
+                        desc_col = 11
+                    else:
+                        valor_col = 9
+                        desc_col = 10
+                    
+                    # ValorInicial
+                    valor_widget = self.table.cellWidget(row, valor_col)
                     if isinstance(valor_widget, NoWheelComboBox):
                         cols.append(valor_widget.currentText())
                     else:
-                        item = self.table.item(row, 9)
+                        item = self.table.item(row, valor_col)
                         cols.append(item.text() if item else "")
                     
-                    # Descricao (col 10)
-                    item = self.table.item(row, 10)
+                    # Descricao
+                    item = self.table.item(row, desc_col)
                     cols.append(item.text() if item else "")
                     
                     writer.writerow(cols)

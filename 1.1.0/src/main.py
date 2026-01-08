@@ -89,7 +89,18 @@ class ModbusEmulator(QMainWindow):
         config_layout = QHBoxLayout()
         
         config_layout.addWidget(QLabel("Porta:"))
-        self.port_combo = QComboBox()
+        
+        # ComboBox customizado que atualiza ao abrir
+        class RefreshComboBox(QComboBox):
+            def showPopup(self):
+                parent = self.parent()
+                while parent and not hasattr(parent, 'refresh_ports'):
+                    parent = parent.parent()
+                if parent:
+                    parent.refresh_ports()
+                super().showPopup()
+        
+        self.port_combo = RefreshComboBox()
         self.port_combo.addItems(self.get_available_ports())
         self.port_combo.setCurrentText(self.config.get('serial_port', 'COM16'))
         config_layout.addWidget(self.port_combo)
@@ -262,6 +273,20 @@ class ModbusEmulator(QMainWindow):
     def get_available_ports(self):
         ports = [port.device for port in serial.tools.list_ports.comports()]
         return ports if ports else ["COM16"]
+    
+    def refresh_ports(self):
+        """Atualiza lista de portas COM ao abrir dropdown"""
+        current = self.port_combo.currentText()
+        self.port_combo.blockSignals(True)
+        self.port_combo.clear()
+        self.port_combo.addItems(self.get_available_ports())
+        
+        # Restaurar seleção anterior se ainda existir
+        idx = self.port_combo.findText(current)
+        if idx >= 0:
+            self.port_combo.setCurrentIndex(idx)
+        
+        self.port_combo.blockSignals(False)
     
 
     
