@@ -25,6 +25,7 @@ class MemoryMapParser:
                     tipo = row.get('Tipo', '').strip()
                     base0 = row.get('RegBase0', '').strip()
                     base1 = row.get('RegBase1', '').strip()
+                    tipo_dados = row.get('Tipo_de_Dados', '').strip()
                     objeto = row.get('Objeto', '').strip()
                     unidade = row.get('Unidade', '').strip()
                     resolucao = row.get('Resolucao', '').strip()
@@ -73,6 +74,7 @@ class MemoryMapParser:
                         'base0': addr_base0,
                         'base1': addr_base1,
                         'tipo': tipo,
+                        'tipo_dados': tipo_dados,
                         'nome': objeto,
                         'unidade': unidade,
                         'resolucao': resolucao,

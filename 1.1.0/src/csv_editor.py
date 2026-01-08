@@ -44,14 +44,14 @@ class CSVEditor(QMainWindow):
     def update_table_columns(self):
         """Atualiza colunas da tabela baseado no formato"""
         if self.use_minmax_format:
-            self.table.setColumnCount(12)
-            self.table.setHorizontalHeaderLabels(["Tipo", "RegBase0", "RegBase1", "Objeto", "Unidade", "Resolucao", "Permissao", "FCs", "Minimo", "Maximo", "ValorInicial", "Descricao"])
+            self.table.setColumnCount(13)
+            self.table.setHorizontalHeaderLabels(["Tipo", "RegBase0", "RegBase1", "Tipo_de_Dados", "Objeto", "Unidade", "Resolucao", "Permissao", "FCs", "Minimo", "Maximo", "ValorInicial", "Descricao"])
         else:
             self.table.setColumnCount(11)
             self.table.setHorizontalHeaderLabels(["Tipo", "RegBase0", "RegBase1", "Objeto", "Unidade", "Resolucao", "Permissao", "FCs", "Intervalo", "ValorInicial", "Descricao"])
         
         self.table.setColumnWidth(0, 100)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(4 if self.use_minmax_format else 3, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(self.table.columnCount()-1, QHeaderView.ResizeMode.Stretch)
     
     def setup_ui(self):
@@ -359,6 +359,7 @@ class CSVEditor(QMainWindow):
                         row_data.get('Tipo', ''),
                         row_data.get('RegBase0', ''),
                         row_data.get('RegBase1', ''),
+                        row_data.get('Tipo_de_Dados', ''),
                         row_data.get('Objeto', ''),
                         row_data.get('Unidade', ''),
                         row_data.get('Resolucao', ''),
@@ -391,9 +392,34 @@ class CSVEditor(QMainWindow):
                 combo.currentTextChanged.connect(lambda t, r=row: self.on_tipo_changed(r, t))
                 self.table.setCellWidget(row, 0, combo)
                 
-                # Colunas 1-5 (RegBase0 até Resolucao)
-                for col in range(1, 6):
+                # Colunas 1-2 (RegBase0 e RegBase1)
+                for col in range(1, 3):
                     self.table.setItem(row, col, QTableWidgetItem(cols_data[col]))
+                
+                # Coluna 3: Tipo_de_Dados (apenas MinMax) ou pular
+                if self.use_minmax_format:
+                    self.table.setItem(row, 3, QTableWidgetItem(cols_data[3]))
+                    obj_col = 4
+                    res_col = 6
+                    perm_col = 7
+                    fcs_col = 8
+                    min_col = 9
+                    max_col = 10
+                    valor_col = 11
+                    desc_col = 12
+                else:
+                    obj_col = 3
+                    res_col = 5
+                    perm_col = 6
+                    fcs_col = 7
+                    int_col = 8
+                    valor_col = 9
+                    desc_col = 10
+                
+                # Objeto, Unidade, Resolucao
+                self.table.setItem(row, obj_col, QTableWidgetItem(cols_data[4 if self.use_minmax_format else 3]))
+                self.table.setItem(row, obj_col + 1, QTableWidgetItem(cols_data[5 if self.use_minmax_format else 4]))
+                self.table.setItem(row, res_col, QTableWidgetItem(cols_data[6 if self.use_minmax_format else 5]))
                 
                 # Permissao (ComboBox)
                 perm_combo = NoWheelComboBox()
@@ -402,34 +428,36 @@ class CSVEditor(QMainWindow):
                     perm_combo.setCurrentText("R")
                 else:
                     perm_combo.addItems(["R", "W", "R/W", "R/W/B", "R/W/B(0)"])
-                    perm_combo.setCurrentText(cols_data[6] if cols_data[6] in ["R", "W", "R/W", "R/W/B", "R/W/B(0)"] else "R")
+                    perm_val = cols_data[7 if self.use_minmax_format else 6]
+                    perm_combo.setCurrentText(perm_val if perm_val in ["R", "W", "R/W", "R/W/B", "R/W/B(0)"] else "R")
                 perm_combo.currentTextChanged.connect(lambda p, r=row: self.on_permissao_changed(r, p))
-                self.table.setCellWidget(row, 6, perm_combo)
+                self.table.setCellWidget(row, perm_col, perm_combo)
                 
-                # Colunas 7-8 (FCs e Intervalo/Minimo)
-                for col in range(7, 9):
-                    self.table.setItem(row, col, QTableWidgetItem(cols_data[col]))
+                # FCs
+                self.table.setItem(row, fcs_col, QTableWidgetItem(cols_data[8 if self.use_minmax_format else 7]))
                 
-                # Coluna 9 (Maximo se formato MinMax, senão ValorInicial)
+                # Minimo/Maximo ou Intervalo
                 if self.use_minmax_format:
-                    self.table.setItem(row, 9, QTableWidgetItem(cols_data[9]))  # Maximo
-                    valor_col = 10
+                    self.table.setItem(row, min_col, QTableWidgetItem(cols_data[9]))
+                    self.table.setItem(row, max_col, QTableWidgetItem(cols_data[10]))
                 else:
-                    valor_col = 9
+                    self.table.setItem(row, int_col, QTableWidgetItem(cols_data[8]))
                 
                 # ValorInicial - ComboBox para COIL/DISC
                 if cols_data[0] in ["COIL", "DISC"]:
                     valor_combo = NoWheelComboBox()
                     valor_combo.addItems(["OFF", "ON", ""])
-                    valor_combo.setCurrentText(cols_data[valor_col] if cols_data[valor_col] in ["ON", "OFF", ""] else "OFF")
+                    val_idx = 11 if self.use_minmax_format else 9
+                    valor_combo.setCurrentText(cols_data[val_idx] if cols_data[val_idx] in ["ON", "OFF", ""] else "OFF")
                     valor_combo.currentTextChanged.connect(lambda: self.mark_modified())
                     self.table.setCellWidget(row, valor_col, valor_combo)
                 else:
-                    self.table.setItem(row, valor_col, QTableWidgetItem(cols_data[valor_col]))
+                    val_idx = 11 if self.use_minmax_format else 9
+                    self.table.setItem(row, valor_col, QTableWidgetItem(cols_data[val_idx]))
                 
                 # Descricao (última coluna)
-                desc_col = 11 if self.use_minmax_format else 10
-                self.table.setItem(row, desc_col, QTableWidgetItem(cols_data[desc_col]))
+                desc_idx = 12 if self.use_minmax_format else 10
+                self.table.setItem(row, desc_col, QTableWidgetItem(cols_data[desc_idx]))
             
             self.csv_path = filename
             self.modified = False
@@ -464,7 +492,7 @@ class CSVEditor(QMainWindow):
                 
                 # Cabeçalho baseado no formato
                 if self.use_minmax_format:
-                    writer.writerow(['Tipo', 'RegBase0', 'RegBase1', 'Objeto', 'Unidade', 'Resolucao', 'Permissao', 'FCs', 'Minimo', 'Maximo', 'ValorInicial', 'Descricao'])
+                    writer.writerow(['Tipo', 'RegBase0', 'RegBase1', 'Tipo_de_Dados', 'Objeto', 'Unidade', 'Resolucao', 'Permissao', 'FCs', 'Minimo', 'Maximo', 'ValorInicial', 'Descricao'])
                 else:
                     writer.writerow(['Tipo', 'RegBase0', 'RegBase1', 'Objeto', 'Unidade', 'Resolucao', 'Permissao', 'FCs', 'Intervalo', 'ValorInicial', 'Descricao'])
                 
@@ -473,34 +501,57 @@ class CSVEditor(QMainWindow):
                     combo = self.table.cellWidget(row, 0)
                     tipo = combo.currentText() if combo else ""
                     
-                    # Colunas 1-5
+                    # Colunas 1-2
                     cols = [tipo]
-                    for col in range(1, 6):
+                    for col in range(1, 3):
                         item = self.table.item(row, col)
                         cols.append(item.text() if item else "")
                     
-                    # Permissao (col 6)
-                    perm_widget = self.table.cellWidget(row, 6)
+                    # Tipo_de_Dados (apenas MinMax)
+                    if self.use_minmax_format:
+                        item = self.table.item(row, 3)
+                        cols.append(item.text() if item else "")
+                        obj_col = 4
+                        perm_col = 7
+                        fcs_col = 8
+                        min_col = 9
+                        max_col = 10
+                        valor_col = 11
+                        desc_col = 12
+                    else:
+                        obj_col = 3
+                        perm_col = 6
+                        fcs_col = 7
+                        int_col = 8
+                        valor_col = 9
+                        desc_col = 10
+                    
+                    # Objeto, Unidade, Resolucao
+                    for col in range(obj_col, obj_col + 3):
+                        item = self.table.item(row, col)
+                        cols.append(item.text() if item else "")
+                    
+                    # Permissao
+                    perm_widget = self.table.cellWidget(row, perm_col)
                     if isinstance(perm_widget, NoWheelComboBox):
                         cols.append(perm_widget.currentText())
                     else:
-                        item = self.table.item(row, 6)
+                        item = self.table.item(row, perm_col)
                         cols.append(item.text() if item else "")
                     
-                    # Colunas 7-8 (FCs e Intervalo/Minimo)
-                    for col in range(7, 9):
-                        item = self.table.item(row, col)
-                        cols.append(item.text() if item else "")
+                    # FCs
+                    item = self.table.item(row, fcs_col)
+                    cols.append(item.text() if item else "")
                     
-                    # Formato MinMax: adicionar coluna Maximo
+                    # Minimo/Maximo ou Intervalo
                     if self.use_minmax_format:
-                        item = self.table.item(row, 9)
+                        item = self.table.item(row, min_col)
                         cols.append(item.text() if item else "")
-                        valor_col = 10
-                        desc_col = 11
+                        item = self.table.item(row, max_col)
+                        cols.append(item.text() if item else "")
                     else:
-                        valor_col = 9
-                        desc_col = 10
+                        item = self.table.item(row, int_col)
+                        cols.append(item.text() if item else "")
                     
                     # ValorInicial
                     valor_widget = self.table.cellWidget(row, valor_col)
